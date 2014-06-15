@@ -9,12 +9,13 @@ Overview
 ``peerz`` is an experiment in using zeromq bindings to implement a structured 
 peer-to-peer overlay network in python.  The peer management and routing logic 
 are heavily base on existing structured overlay networks such as
-``damelia``, ``tapestry`` and ``chord``. 
+``kademlia``, ``tapestry`` and ``chord``. 
 
 Goals
 -----
 
 The goal of ``peerz`` is to provide a p2p library in python capable of:
+
 * Efficient routing in networks ranging from small LAN deployments to Internet scale
 * Locality awareness of resources
 * Scalable, fault tolerant and self-organising
