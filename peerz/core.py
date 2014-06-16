@@ -23,7 +23,7 @@ import zmq.green as zmq
 import gevent
 
 from peerz.persistence import LocalStorage
-from peerz.routing import Overlay, Node, NodeTable
+from peerz.routing import Overlay, Node, RoutingBin
 
 DEFAULT_TIMEOUT = 20
 LOG = logging.Logger(__name__)
@@ -52,9 +52,9 @@ class Connection(object):
         self.overlay = Overlay(self)
         self._load_state()
         if not self.overlay.nodelist:
-            self.overlay.nodelist = NodeTable()
-        if not self.node:
-            self.node = Node(self.overlay.generate_id(), 
+            self.overlay.nodelist = RoutingBin()
+        if not self.overlay.node:
+            self.overlay.node = Node(self.overlay.generate_id(), 
                              socket.gethostbyname(socket.gethostname()), port)
 
     
@@ -82,7 +82,7 @@ class Connection(object):
             x.peer_peerlist(peers)
             
     def get_local(self):
-        return self.node
+        return self.overlay.node
     
     def get_peers(self):
         return self.overlay.get_peers()
@@ -187,9 +187,10 @@ class Connection(object):
                 mtype = msg[0]
                 if mtype == 'JOIN':
                     node = Node(msg[1], *msg[2].split(':'))
+                    us = self.overlay.node
                     self.fire_peer_updated(node) # inbound not really peer?
-                    if msg[1] != self.node.node_id:
-                        self.server.send_multipart(['JOINOK', self.node.node_id, '{0}:{1}'.format(self.node.address, self.node.port)])
+                    if msg[1] != us.node_id:
+                        self.server.send_multipart(['JOINOK', us.node_id, '{0}:{1}'.format(us.address, us.port)])
                     else:
                         self.server.send_multipart(['NOJOIN'])
                 elif mtype == 'PING':
@@ -207,7 +208,8 @@ class Connection(object):
         try:
             sock = Socket(self.zctx, zmq.REQ)
             sock.connect("tcp://{0}".format(endpoint))
-            sock.send_multipart(['JOIN', self.node.node_id, '{0}:{1}'.format(self.node.address, self.node.port)])
+            us = self.overlay.node
+            sock.send_multipart(['JOIN', us.node_id, '{0}:{1}'.format(us.address, us.port)])
             msg = sock.recv_multipart()
             mtype = msg[0]
             if mtype == 'JOINOK':
@@ -240,11 +242,11 @@ class Connection(object):
         self.fire_peer_peerlist([ Node(*x.split(":")) for x in msg[1:] ])
             
     def _dump_state(self):
-        self.localstore.store('node', self.node)
+        self.localstore.store('overlay.node', self.overlay.node)
         self.localstore.store('overlay.nodelist', self.overlay.nodelist)
     
     def _load_state(self):
-        self.node = self.localstore.fetch('node')
+        self.overlay.node = self.localstore.fetch('overlay.node')
         self.overlay.nodelist = self.localstore.fetch('overlay.nodelist')
      
 # http://lucumr.pocoo.org/2012/6/26/disconnects-are-good-for-you/

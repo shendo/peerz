@@ -24,19 +24,27 @@ import gevent
 
 LOG = logging.Logger(__name__)
 EPOCH = datetime.utcfromtimestamp(0)
+K = 10
 
 def time_in_future(seconds):
-    return (datetime.utcnow() - EPOCH + timedelta(seconds=120)).total_seconds()
+    return (datetime.utcnow() - EPOCH + timedelta(seconds=seconds)).total_seconds()
+
+def distance(node_id1, node_id2):
+    return int(uuid.UUID(node_id1)) ^ int(uuid.UUID(node_id2))
+
+def node_id(node_id, distance):
+    return str(uuid.UUID(int=int(uuid.UUID(node_id)) ^ distance))
 
 class Overlay(object):
     
     def __init__(self, connection):
         self.max_peers = 10
         self.connection = connection
-        self.nodelist = NodeTable()
+        self.nodelist = RoutingBin()
         self.peers = {}
         self.connection.add_listener(self)
         self.seeds = []
+        self.node = None
         
     def generate_id(self):
         return str(uuid.uuid4())
@@ -116,15 +124,12 @@ class Node(object):
     def __str__(self):
         return '{0} - {1}:{2} ({3})'.format(self.node_id, self.address, self.port, self.hostname)
 
+class RoutingBin(object):
 
-class NodeTable(object):    
-    
-    # TODO fix up this crap
     def __init__(self):
         self.nodes = OrderedDict()
     
     def get_by_id(self, node_id):
-        # O(N) :(
         for x in self.nodes.values():
             if x.node_id == node_id:
                 return x
@@ -136,6 +141,34 @@ class NodeTable(object):
     def get_all(self):
         return self.nodes.values()
     
+    def get_node_ids(self):
+        return [ x.node_id for x in self.get_all() ]
+    
+    def get_oldest(self):
+        node = None
+        for x in self.nodes.values():
+            if not node \
+                or (not node.last_connected and x.last_connected) \
+                or (x.last_connected and x.last_connected < node.last_connected):
+                node = x
+        return node
+    
+    def get_closest_to(self, target, max_nodes=1):
+        distances = sorted([ distance(x, target) for x in self.get_node_ids() ])
+        distances = distances[:max_nodes]
+        print [ node_id(target, x) for x in distances ]
+        return [ self.get_by_id(node_id(target, x)) for x in distances ]
+    
+    def size(self):
+        return len(self.nodes)
+    
+    def remaining(self):
+        return K - self.size()
+    
+    def push_to_bottom(self, node):
+        del self.nodes[(node.address, node.port)]
+        self.nodes[(node.address, node.port)] = node
+        
     def update(self, node):
         """Return a node guaranteed to be in the table
         with the values contained in node.
@@ -154,3 +187,34 @@ class NodeTable(object):
 
         n.last_activity = time_in_future(0)
         return n
+    
+    
+class RoutingZone(object):
+    def __init__(self, super_zone, level, index):
+        self.super_zone = super_zone
+        self.sub_zones = [None, None]
+        self.index = index
+        self.level = level
+        self.routing_bin = None
+        self.node_id = None
+        
+    def is_leaf(self):
+        return self.routing_bin
+    
+    def can_split(self):
+        return False
+    
+    def get_nodes(self, depth):
+        return []
+    
+    def closest_to(self, target, distance, max_nodes):
+        return []
+    
+    def max_depth(self):
+        return 0
+    
+    def consolidate(self):
+        pass
+    
+    def split(self):
+        pass

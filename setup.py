@@ -36,6 +36,7 @@ setup(
     include_package_data=True,
     license="GPL",
     install_requires = ['pyzmq>=2.2', 'gevent>=1.0.1'],
+    tests_requires = ['pytest>=2.5'],
     classifiers = [
         'Development Status :: 3 - Alpha',
         'Intended Audience :: Developers',
