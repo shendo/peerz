@@ -186,11 +186,11 @@ class Connection(object):
                 LOG.debug(msg)
                 mtype = msg[0]
                 if mtype == 'JOIN':
-                    node = Node(msg[1], *msg[2].split(':'))
+                    node = Node(Node.str_to_id(msg[1]), *msg[2].split(':'))
                     us = self.overlay.node
                     self.fire_peer_updated(node) # inbound not really peer?
-                    if msg[1] != us.node_id:
-                        self.server.send_multipart(['JOINOK', us.node_id, '{0}:{1}'.format(us.address, us.port)])
+                    if msg[1] != Node.id_to_str(us.node_id):
+                        self.server.send_multipart(['JOINOK', Node.id_to_str(us.node_id), '{0}:{1}'.format(us.address, us.port)])
                     else:
                         self.server.send_multipart(['NOJOIN'])
                 elif mtype == 'PING':
@@ -198,7 +198,7 @@ class Connection(object):
                 elif mtype == 'LEAVE':
                     self.server.send_multipart(['BYE'])
                 elif mtype == 'PEERS':
-                    nodes = [ "{0}:{1}:{2}".format(x.node_id, x.address, x.port) 
+                    nodes = [ "{0}:{1}:{2}".format(Node.id_to_str(x.node_id), x.address, x.port) 
                              for x in self.overlay.get_known_nodes() ]
                     self.server.send_multipart(['PEERS'] + nodes)
             except TimeoutError:
@@ -209,11 +209,11 @@ class Connection(object):
             sock = Socket(self.zctx, zmq.REQ)
             sock.connect("tcp://{0}".format(endpoint))
             us = self.overlay.node
-            sock.send_multipart(['JOIN', us.node_id, '{0}:{1}'.format(us.address, us.port)])
+            sock.send_multipart(['JOIN', Node.id_to_str(us.node_id), '{0}:{1}'.format(us.address, us.port)])
             msg = sock.recv_multipart()
             mtype = msg[0]
             if mtype == 'JOINOK':
-                node = Node(msg[1], msg[2].split(':')[0], msg[2].split(':')[1])
+                node = Node(Node.str_to_id(msg[1]), msg[2].split(':')[0], msg[2].split(':')[1])
                 self.conntrack.add(node.node_id, sock)
                 self.fire_peer_joined(node)
             elif mtype == 'NOJOIN':
@@ -232,14 +232,15 @@ class Connection(object):
             node.latency_ms = (node.latency_ms + latency) /2
         else:
             node.latency_ms = latency
-        LOG.debug("Heartbeat recvd from {0} in {1} ms".format(node.node_id, node.latency_ms))
+        LOG.debug("Heartbeat recvd from {0} in {1} ms".format(Node.id_to_str(node.node_id), node.latency_ms))
         self.fire_peer_updated(node)
         
     def _fetchpeers(self, node, sock):
         sock.send_multipart(['PEERS'])
         msg = sock.recv_multipart()
         # TODO constrain size of list
-        self.fire_peer_peerlist([ Node(*x.split(":")) for x in msg[1:] ])
+        self.fire_peer_peerlist([ Node(Node.str_to_id(x.split(":")[0]), x.split(":")[1], x.split(":")[2]) \
+                                  for x in msg[1:] ])
             
     def _dump_state(self):
         self.localstore.store('overlay.node', self.overlay.node)

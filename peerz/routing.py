@@ -91,6 +91,7 @@ class Overlay(object):
         self.connection = connection
         self.nodelist = RoutingBin()
         self.peers = {}
+        self.max_peers = 20
         self.connection.add_listener(self)
         self.seeds = []
         self.node = None
@@ -165,7 +166,7 @@ class Node(object):
         self.latency_ms = 0
     
     def to_json(self):
-        return {'node_id': self.str_id(),
+        return {'node_id': Node.id_to_str(self.node_id),
                 'address': self.address,
                 'port': self.port,
                 'hostname': self.hostname,
@@ -174,12 +175,17 @@ class Node(object):
                 'last_activity': self.last_activity,
                 'latency_ms': self.latency_ms
                 }
-        
-    def str_id(self):
-        return uuid.UUID(int=self.node_id)
+    
+    @staticmethod
+    def id_to_str(node_id):
+        return str(uuid.UUID(int=node_id))
+    
+    @staticmethod
+    def str_to_id(node_id):
+        return int(uuid.UUID(node_id))
     
     def __str__(self):
-        return '{0} - {1}:{2} ({3})'.format(self.str_id(), self.address, self.port, self.hostname)
+        return '{0} - {1}:{2} ({3})'.format(Node.id_to_str(self.node_id), self.address, self.port, self.hostname)
 
 class RoutingBin(object):
 
