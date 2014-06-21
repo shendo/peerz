@@ -35,16 +35,16 @@ A = 3
 # bit length of node id/key values
 KEY_BITS = 128
 
-def time_in_future(seconds):
+def time_since_epoch(future=0):
     """
     Returns time in seconds, since 1970,
     the specified number of seconds into the future.
     Precision is guaranteed to be at least to second
     resolution but may also be decimal for subsecond.
-    @param seconds: How many seconds in future to return
+    @param future: How many seconds in future to return
     @retrun: Seconds since 1970 epoch
     """
-    return (datetime.utcnow() - EPOCH + timedelta(seconds=seconds)) \
+    return (datetime.utcnow() - EPOCH + timedelta(seconds=future)) \
         .total_seconds()
 
 def distance(node_id1, node_id2):
@@ -119,7 +119,7 @@ class Overlay(object):
         self.nodelist.update(node)
     
     def peer_joined(self, node):
-        node.last_connected = time_in_future(0)
+        node.last_connected = time_since_epoch()
         if not node.first_connected:
             node.first_connected = node.last_connected
         self.peers[node.node_id] = self.nodelist.update(node)
@@ -241,7 +241,7 @@ class RoutingBin(object):
             self.nodes[(node.address, node.port)] = node
             n = node
 
-        n.last_activity = time_in_future(0)
+        n.last_activity = time_since_epoch()
         return n
     
     

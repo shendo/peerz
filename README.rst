@@ -8,8 +8,8 @@ Overview
 
 ``peerz`` is an experiment in using zeromq bindings to implement a structured 
 peer-to-peer overlay network in python.  The peer management and routing logic 
-are heavily base on existing structured overlay networks such as
-``kademlia``, ``tapestry`` and ``chord``. 
+are heavily based on existing structured overlay networks such as
+``kademlia`` and ``tapestry``. 
 
 Goals
 -----
