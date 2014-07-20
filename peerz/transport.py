@@ -11,9 +11,25 @@ PROTOCOL_NAME = 'PEERZ'
 DEFAULT_TIMEOUT = 20
 
 def headers(node, msgtype):
+    """
+    Generate the message headers for sending on the wire.
+    Any message body elements can be appended to the returned
+    object before sending.
+    @param node: Node details in 'id:addr:port' format.
+    @param msgtype: String name of message type
+    @return: List that can be sent as a multipart message.
+    """
     return [PROTOCOL_NAME, PROTOCOL_VERSION, node, msgtype]
     
 def splitmsg(msg):
+    """
+    Given a multipart message, split out the application important
+    fields and return them.
+    @param msg: Multipart message list
+    @return: Tuple of peer_id, peer_addr, peer_port, msgtype, extra
+    where extra is a list of msg body fields (or an empty list if none)
+    @raise InvalidMessage: Any message parsing issues
+    """
     if len(msg) < 4:
         raise InvalidMessage("Insufficient message parts")
     protocol, version, peer, msgtype = msg[:4]
@@ -26,15 +42,37 @@ def splitmsg(msg):
     return peer_id, peer_addr, peer_port, msgtype, extra
 
 def pack_node(node_id, addr, port):
+    """
+    Given a tuple of basic node details, return in packed string format.
+    @param node_id: Id of node as a long
+    @param addr: IP address of node
+    @param port: Port number of node
+    @return: String representation of node.
+    """
     return '{0}:{1}:{2}'.format(Node.id_to_str(node_id), addr, port)
 
 def unpack_node(node_str):
+    """
+    Given a string representation of a node, return a tuple of its details.
+    @param node_str: Node details in 'id:addr:port' format.
+    @return: Tuple of node_id (as long), address, port
+    """
     x = node_str.split(':')
     return (Node.str_to_id(x[0]), x[1], x[2])
 
 class ConnectionPool(object):
-    
+    """
+    Simple LRU connection pool for client connections.
+    """
     def __init__(self, node_id, addr, port, ctx=None, maxsize=20):
+        """
+        Initialise the pool with the supplied details.
+        @param node_id: Id of this node as a long
+        @param addr: IP address of this node
+        @param port: Port number of this node
+        @param ctx: ZMQ context, will be auto created if None
+        @param maxsize: Maximum number of open connections
+        """
         self.pool = OrderedDict()
         self.maxsize = maxsize
         if not ctx:
@@ -46,6 +84,12 @@ class ConnectionPool(object):
         self.port = port
 
     def fetch(self, peer):
+        """
+        Fetch a connection for the given peer.
+        @param peer: Peer (Node obj) to get a connection for
+        @return: A Connection to the specified peer
+        @raise ConnectionError unable to obtain the connection
+        """
         if peer.node_id in self.pool:
             conn = self.pool.pop(peer.node_id)
         else:
@@ -57,7 +101,9 @@ class ConnectionPool(object):
         return conn
 
 class Connection(object):
-    
+    """
+    Represents a client connection to a given peer.
+    """
     def __enter__(self):
         return self
 
@@ -65,18 +111,33 @@ class Connection(object):
         self.close()
         
     def __init__(self, node_id, addr, port, peer, ctx=None):
+        """
+        Create a new connection to the specified peer.
+        @param node_id: Node id (as long) of this node
+        @param addr: IP address of this node
+        @param port: Port number of this node
+        @param peer: Peer (Node obj) to create connection to
+        @param ctx: ZMQ context or autocreate if None
+        """
         self.node = pack_node(node_id, addr, port)
         self.peer = peer
-        if not ctx:
-            self.ctx = zmq.Context()
-            self.ctx_managed = True
-        else:
-            self.ctx = ctx
-            self.ctx_managed = False
-        self.socket = Socket(self.ctx, zmq.REQ)
-        self.socket.connect("tcp://{0}:{1}".format(peer.address, peer.port))
+        try:
+            if not ctx:
+                self.ctx = zmq.Context()
+                self.ctx_managed = True
+            else:
+                self.ctx = ctx
+                self.ctx_managed = False
+            self.socket = Socket(self.ctx, zmq.REQ)
+            self.socket.connect("tcp://{0}:{1}".format(peer.address, peer.port))
+        except zmq.ZMQError, ex:
+            raise ConnectionError(str(ex))
     
     def ping(self):
+        """
+        Ping the peer.
+        @return: Round trip time in ms
+        """
         msg = headers(self.node, 'PING')
         start = time.time()
         self.socket.send_multipart(msg)
@@ -86,6 +147,12 @@ class Connection(object):
         return rtt
         
     def find_nodes(self, target_id):
+        """
+        Request the peers list of closest nodes to the given target.
+        @param target_id: Node id (as long) to use for distance
+        @return: Tuple of list of nodes (id_str, addr, port) and 
+        round trip time in ms
+        """
         msg = headers(self.node, 'FNOD')
         msg.append(Node.id_to_str(target_id))
         start = time.time() 
@@ -97,12 +164,25 @@ class Connection(object):
         return nodes, rtt
     
     def close(self):
+        """
+        Teardown this connection
+        """
         self.socket.close()
         if self.ctx_managed:
             self.ctx.term()
     
 class Server(object):
+    """
+    The server socket for the given node.
+    """
     def __init__(self, node_id, addr, port, listener):
+        """
+        Creates a new server (bound but not dispatching messages)
+        @param node_id: Id of this node (as long)
+        @param addr: IP address of this node
+        @param port: Port number to listen on
+        @param listener: Callback object to receive handle_* function calls
+        """
         try:
             self.ctx = zmq.Context()
             self.sock = Socket(self.ctx, zmq.REP)
@@ -114,6 +194,9 @@ class Server(object):
             raise ConnectionError(str(ex))
         
     def dispatch(self):
+        """
+        Start the message dispatch loop (blocking).
+        """
         while not self.shutdown:
             try:
                 msg = self.sock.recv_multipart()
@@ -166,10 +249,19 @@ class Socket(zmq.Socket):
     del _meth, _timeout_wrapper
         
 class ConnectionError(Exception):
+    """
+    Some error occurred with the network connection/transport.
+    """
     pass
 
 class TimeoutError(ConnectionError):
+    """
+    A timeout occured on the given connection.
+    """
     pass
 
 class InvalidMessage(Exception):
+    """
+    An error occurred while trying to parse a network message.
+    """
     pass

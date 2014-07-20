@@ -20,18 +20,18 @@ import socket
 import gevent
 
 from peerz.persistence import LocalStorage
-from peerz.protocol import Connection, ConnectionPool, ConnectionError, Server
+from peerz.transport import Connection, ConnectionPool, ConnectionError, Server
 from peerz.routing import generate_id, Node, RoutingZone
 
 LOG = logging.Logger(__name__)
 
 class Network(object):
     """
-    Encapsulates the interaction and state storage for the
-    overlay network implementation.
+    Encapsulates the interaction and state storage for a
+    a nodes connection into the p2p network.
     """ 
     
-    def __init__(self, port, storage, max_incoming=10, max_outgoing=10):
+    def __init__(self, port, storage):
         """
         Creates a new (not yet connected) network object.
         @param port: Listener/server port for this node.
@@ -39,7 +39,7 @@ class Network(object):
         """
         self.shutdown = False
         self.port = port
-        # TODO: external IP resolution
+        # eventually cater for external IPs / UPNP / port forwarding
         self.addr = socket.gethostbyname(socket.gethostname())
         self.storage = storage
         self.server = None
@@ -58,17 +58,25 @@ class Network(object):
                                               self.node.port)
 
     def get_local(self):
+        """
+        @return: the node object that represents the current/local node.
+        """
         return self.node
     
     def get_peers(self):
+        """
+        @return: List of all known active peer nodes.
+        """
         nodes = self.nodetree.get_all_nodes()
         nodes.remove(self.node)
         return nodes
     
     def reset(self):
-        # eventually cater for external IPs / UPNP / port forwarding
+        """
+        Remove any existing state and reset as a new node.
+        """
         self.node = Node(generate_id(), 
-                         socket.gethostbyname(socket.gethostname()), 
+                         self.addr,
                          self.port)        
         self.nodetree = RoutingZone(self.node.node_id)
         self._dump_state()
@@ -78,7 +86,7 @@ class Network(object):
         Attempt to connect this node into the network.
         Handle case where we are the first node and do not yet have available peers.
         @param seeds: List of seeds 'addr:port' to attempt to bootstrap from.
-        @raise ZMQError: Unable to bind to server socket.
+        @raise ConnectionError: Unable to bind to server socket.
         """
         
         LOG.info("Joining network")

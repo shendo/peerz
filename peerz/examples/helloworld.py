@@ -16,7 +16,7 @@
 import gevent
 
 from peerz.core import Network
-from peerz.protocol import ConnectionError
+from peerz.transport import ConnectionError
 
 SEED = 'localhost:7111'
 ROOT = '/tmp/helloworld'
