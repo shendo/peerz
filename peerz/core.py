@@ -14,78 +14,64 @@
 # You should have received a copy of the GNU General Public License
 # along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
-from datetime import datetime
-from functools import update_wrapper
 import logging
 import socket
 
-import zmq.green as zmq
 import gevent
 
 from peerz.persistence import LocalStorage
-from peerz.routing import Overlay, Node, RoutingBin
+from peerz.protocol import Connection, ConnectionPool, ConnectionError, Server
+from peerz.routing import generate_id, Node, RoutingZone
 
-DEFAULT_TIMEOUT = 20
 LOG = logging.Logger(__name__)
 
-
-class Connection(object):
+class Network(object):
     """
-    Encapsulates a connection and interaction with the p2p network.
-    """    
+    Encapsulates the interaction and state storage for the
+    overlay network implementation.
+    """ 
     
-    def __init__(self, port, storage):
+    def __init__(self, port, storage, max_incoming=10, max_outgoing=10):
         """
-        Creates a new (not yet connected) connection object.
-        @param port: Listener/server port for this connection.
-        @param storage: Filesystem path to root of storage.
+        Creates a new (not yet connected) network object.
+        @param port: Listener/server port for this node.
+        @param storage: Filesystem path to root of local storage.
         """
         self.shutdown = False
-        self.listeners = []
         self.port = port
+        # TODO: external IP resolution
+        self.addr = socket.gethostbyname(socket.gethostname())
         self.storage = storage
-        self.zctx = zmq.Context()
         self.server = None
-        self.seeds = []
-        self.conntrack = ConnectionTracker()
+        # Tree of known nodes
+        self.nodetree = None
+        # Node representing ourself
+        self.node = None
+        # persistence between runs
         self.localstore = LocalStorage(storage, port)
-        self.overlay = Overlay(self)
         self._load_state()
-        if not self.overlay.nodelist:
-            self.overlay.nodelist = RoutingBin()
-        if not self.overlay.node:
-            self.overlay.node = Node(self.overlay.generate_id(), 
-                             socket.gethostbyname(socket.gethostname()), port)
+        # clean start
+        if not self.node:
+            self.reset()
+        self.connection_pool = ConnectionPool(self.node.node_id, 
+                                              self.node.address,
+                                              self.node.port)
 
-    
-    def add_listener(self, listener):
-        self.listeners.append(listener)
-        
-    def remove_listener(self, listener):
-        self.listeners.remove(listener)
-        
-
-    def fire_peer_joined(self, node):
-        for x in self.listeners:
-            x.peer_joined(node)
-        
-    def fire_peer_left(self, node):
-        for x in self.listeners:
-            x.peer_left(node)
-            
-    def fire_peer_updated(self, node):
-        for x in self.listeners:
-            x.peer_updated(node)
-            
-    def fire_peer_peerlist(self, peers):
-        for x in self.listeners:
-            x.peer_peerlist(peers)
-            
     def get_local(self):
-        return self.overlay.node
+        return self.node
     
     def get_peers(self):
-        return self.overlay.get_peers()
+        nodes = self.nodetree.get_all_nodes()
+        nodes.remove(self.node)
+        return nodes
+    
+    def reset(self):
+        # eventually cater for external IPs / UPNP / port forwarding
+        self.node = Node(generate_id(), 
+                         socket.gethostbyname(socket.gethostname()), 
+                         self.port)        
+        self.nodetree = RoutingZone(self.node.node_id)
+        self._dump_state()
     
     def join(self, seeds):
         """
@@ -94,44 +80,20 @@ class Connection(object):
         @param seeds: List of seeds 'addr:port' to attempt to bootstrap from.
         @raise ZMQError: Unable to bind to server socket.
         """
-        self.server = Socket(self.zctx, zmq.REP)
-        self.server.bind("tcp://*:{0}".format(self.port))  
-        self.overlay.seeds = list(seeds)
         
         LOG.info("Joining network")
-        # TODO parralelise with gevent pools and better zmq pattern 
-        gevent.spawn(self._server_loop)
-        gevent.spawn(self._ping_peers)
-        gevent.spawn(self.overlay.manage_peers)
-        
-                    
-    def _ping_peers(self):
-        while not self.shutdown:
-            for node in self.overlay.get_peers():
-                sock = self.conntrack.get(node.node_id)
-                try:
-                    self._heartbeat(node, sock)
-                    self._fetchpeers(node, sock) # not so freq?
-                except (zmq.ZMQError, TimeoutError):
-                    self.conntrack.remove(node.node_id)
-                    self.fire_peer_left(node)
-            self._dump_state()
-            gevent.sleep(10)
+        self.server = Server(self.node.node_id, self.node.address,
+                             self.node.port, self)
+        gevent.spawn(self.server.dispatch)
+        self._bootstrap(seeds)
             
     def leave(self):
         """
         Leave the network and tear-down any intermediate state.
         """
+        LOG.info("Leaving network")
         self.shutdown = True
-        for node in self.overlay.get_peers():
-            sock = self.conntrack.get(node.node_id)
-            try:
-                sock.send_multipart(['LEAVE'])
-                sock.recv_multipart()
-                sock.close()
-            except (zmq.ZMQError, TimeoutError):
-                pass
-
+        self.server.close()
     
     def publish(self, content, context='default', redundancy=1, ttl=0):
         """
@@ -177,130 +139,57 @@ class Connection(object):
         """
         pass
     
-    
-    def _server_loop(self):
-        self._dump_state()      
-        while not self.shutdown:
-            try:
-                msg = self.server.recv_multipart()
-                LOG.debug(msg)
-                mtype = msg[0]
-                if mtype == 'JOIN':
-                    node = Node(Node.str_to_id(msg[1]), *msg[2].split(':'))
-                    us = self.overlay.node
-                    self.fire_peer_updated(node) # inbound not really peer?
-                    if msg[1] != Node.id_to_str(us.node_id):
-                        self.server.send_multipart(['JOINOK', Node.id_to_str(us.node_id), '{0}:{1}'.format(us.address, us.port)])
-                    else:
-                        self.server.send_multipart(['NOJOIN'])
-                elif mtype == 'PING':
-                    self.server.send_multipart(['PONG'])
-                elif mtype == 'LEAVE':
-                    self.server.send_multipart(['BYE'])
-                elif mtype == 'PEERS':
-                    nodes = [ "{0}:{1}:{2}".format(Node.id_to_str(x.node_id), x.address, x.port) 
-                             for x in self.overlay.get_known_nodes() ]
-                    self.server.send_multipart(['PEERS'] + nodes)
-            except TimeoutError:
-                pass
-            
-    def _join(self, endpoint):
-        try:
-            sock = Socket(self.zctx, zmq.REQ)
-            sock.connect("tcp://{0}".format(endpoint))
-            us = self.overlay.node
-            sock.send_multipart(['JOIN', Node.id_to_str(us.node_id), '{0}:{1}'.format(us.address, us.port)])
-            msg = sock.recv_multipart()
-            mtype = msg[0]
-            if mtype == 'JOINOK':
-                node = Node(Node.str_to_id(msg[1]), msg[2].split(':')[0], msg[2].split(':')[1])
-                self.conntrack.add(node.node_id, sock)
-                self.fire_peer_joined(node)
-            elif mtype == 'NOJOIN':
-                sock.close()
-                # update ?
-        except (zmq.ZMQError, TimeoutError):
-            pass
+    def handle_node_seen(self, peer_id, peer_addr, peer_port):
+        node = self.nodetree.get_node_by_id(peer_id)
+        if not node:
+            node = Node(peer_id, peer_addr, peer_port)
+            self.nodetree.add(node)
 
-    def _heartbeat(self, node, sock):
-        start = datetime.utcnow()
-        sock.send_multipart(['PING'])       
-        sock.recv_multipart()
-        latency = (datetime.utcnow() - start).total_seconds() * 1000
-        # average with previous value to help smooth
-        if node.latency_ms:
-            node.latency_ms = (node.latency_ms + latency) /2
-        else:
-            node.latency_ms = latency
-        LOG.debug("Heartbeat recvd from {0} in {1} ms".format(Node.id_to_str(node.node_id), node.latency_ms))
-        self.fire_peer_updated(node)
+    def handle_find_nodes(self, peer_id, target):
+        LOG.debug("Finding nodes for peer: {0} target: {1}" \
+                  .format(peer_id, target))
+        return [ (x.node_id, x.address, x.port) 
+                for x in self.nodetree.closest_to(target) ]
         
-    def _fetchpeers(self, node, sock):
-        sock.send_multipart(['PEERS'])
-        msg = sock.recv_multipart()
-        # TODO constrain size of list
-        self.fire_peer_peerlist([ Node(Node.str_to_id(x.split(":")[0]), x.split(":")[1], x.split(":")[2]) \
-                                  for x in msg[1:] ])
-            
+    def _bootstrap(self, seeds):
+        if not seeds:
+            raise ValueError('Seeds list must not be empty and must contain '
+                             'endpoints in "address:port" format.')
+        untried = list(seeds)
+        self.nodetree.add(self.node)
+        while len(self.nodetree.get_all_nodes()) < 2:
+            if not untried:
+                gevent.sleep(5)
+                untried = list(seeds)
+            self._bootstrap_from_peer(untried.pop())
+                
+    def _bootstrap_from_peer(self, endpoint):
+        addr, port = endpoint.split(':')
+        try:
+            LOG.debug("Attempting to bootstrap from {0}".format(endpoint))
+            with Connection(self.node.node_id, self.node.address, 
+                            self.node.port, Node(None, addr, port)) as conn:
+                nodes, rtt = conn.find_nodes(self.node.node_id)
+                LOG.debug("Discovered {0} nodes from seed {1}".format(
+                            len(nodes), endpoint))
+                for x in nodes:
+                    node = Node(*x)
+                    # only add newly discovered
+                    if not self.nodetree.get_node_by_id(node.node_id):
+                        self.nodetree.add(node)
+                seed = self.nodetree.get_node_by_addr(addr, port)
+                if seed:
+                    seed.update(rtt)
+        except ConnectionError, ex:
+            LOG.debug("Failed to bootstrap from {0} because of {1}".format(
+                            endpoint, str(ex)))
+
+
     def _dump_state(self):
-        self.localstore.store('overlay.node', self.overlay.node)
-        self.localstore.store('overlay.nodelist', self.overlay.nodelist)
+        self.localstore.store('node', self.node)
+        self.localstore.store('nodetree', self.nodetree)
     
     def _load_state(self):
-        self.overlay.node = self.localstore.fetch('overlay.node')
-        self.overlay.nodelist = self.localstore.fetch('overlay.nodelist')
+        self.node = self.localstore.fetch('node')
+        self.nodetree = self.localstore.fetch('nodetree')
      
-# http://lucumr.pocoo.org/2012/6/26/disconnects-are-good-for-you/
-class Socket(zmq.Socket):
-
-    def on_timeout(self):
-        raise TimeoutError
-
-    def _timeout_wrapper(f):
-        def wrapper(self, *args, **kwargs):
-            timeout = kwargs.pop('timeout', DEFAULT_TIMEOUT)
-            if timeout is not None:
-                timeout = int(timeout * 1000)
-                poller = zmq.Poller()
-                poller.register(self)
-                if not poller.poll(timeout):
-                    return self.on_timeout()
-            return f(self, *args, **kwargs)
-        return update_wrapper(wrapper, f, ('__name__', '__doc__'))
-
-    for _meth in dir(zmq.Socket):
-        if _meth.startswith(('send', 'recv')):
-            locals()[_meth] = _timeout_wrapper(getattr(zmq.Socket, _meth))
-
-    del _meth, _timeout_wrapper
-
-class ConnectionTracker(object):
-    def __init__(self):
-        # node_id -> open socket
-        self.sockets = {} 
-
-    def add(self, node_id, socket):
-        tmp = self.sockets.get(node_id)
-        if tmp != socket:
-            self._close(tmp)
-        self.sockets[node_id] = socket
-        
-    def remove(self, node_id):
-        try:
-            self._close(self.sockets.get(node_id))
-            del self.sockets[node_id]
-        except (KeyError, AttributeError):
-            pass
-    
-    def get(self, node_id):
-        return self.sockets.get(node_id)
-    
-    def _close(self, socket):
-        try:
-            if socket:
-                socket.close()
-        except zmq.ZMQError:
-            pass
-        
-class TimeoutError(Exception):
-    pass

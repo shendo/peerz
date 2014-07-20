@@ -20,32 +20,36 @@ import logging
 import socket
 import uuid
 
-import gevent
-
 LOG = logging.Logger(__name__)
 EPOCH = datetime.utcfromtimestamp(0)
 
 # K number of nodes per bucket/bin
-K = 10
-# lookup accelaration by allowing B further
+K = 8
+# lookup acceleration by allowing B further
 # splits/depth for non-node_id subtrees
 B = 5
-# number of simultaneous/outstanding queries 
-A = 3
 # bit length of node id/key values
 KEY_BITS = 128
 
 def time_since_epoch(future=0):
     """
-    Returns time in seconds, since 1970,
+    Returns time in seconds, since 1 Jan, 1970 UTC,
     the specified number of seconds into the future.
     Precision is guaranteed to be at least to second
-    resolution but may also be decimal for subsecond.
+    resolution but may also be decimal for subseconds.
     @param future: How many seconds in future to return
     @retrun: Seconds since 1970 epoch
     """
     return (datetime.utcnow() - EPOCH + timedelta(seconds=future)) \
         .total_seconds()
+
+def generate_id():
+    """
+    Create a new random key/id KEY_BITS in size.
+    Large key sizes should minimises chances of collision.
+    @return: New randomly generated id
+    """
+    return int(uuid.uuid4())
 
 def distance(node_id1, node_id2):
     """
@@ -69,222 +73,286 @@ def bit_number(node_id, bit):
     if bit >= KEY_BITS:
         return 0
     return (node_id >> (KEY_BITS - 1 - bit)) & 1 
-    
-    
-class Overlay(object):
-    """
-    Encapsulates the logic and state storage for the
-    overlay network implementation.
-    No network communication to be performed directly
-    by this class, instead it registers callbacks
-    on the connection class and _requests_ join and
-    leave actions via the connection.
-    """ 
-    
-    def __init__(self, connection):
-        """
-        Creates the overlay but does not start
-        any interaction with peers/network.
-        @param connection: Connection object for interacting
-        with underlying network
-        """
-        self.connection = connection
-        self.nodelist = RoutingBin()
-        self.peers = {}
-        self.max_peers = 20
-        self.connection.add_listener(self)
-        self.seeds = []
-        self.node = None
-        
-    def generate_id(self):
-        """
-        Create a new random key/id KEY_BITS in size.
-        Large key sizes should minimises chances of collision.
-        @return: New randomly generated id
-        """
-        return int(uuid.uuid4())
-    
-    def get_peers(self):
-        return self.peers.values()
-    
-    def get_peer(self, node_id):
-        return self.peers.get(node_id)
-    
-    def get_known_nodes(self):
-        return self.nodelist.nodes.values()
-    
-    def route_to(self, node_id):
-        return None
-    
-    def peer_updated(self, node):
-        self.nodelist.update(node)
-    
-    def peer_joined(self, node):
-        node.last_connected = time_since_epoch()
-        if not node.first_connected:
-            node.first_connected = node.last_connected
-        self.peers[node.node_id] = self.nodelist.update(node)
-    
-    def peer_left(self, node):
-        del self.peers[node.node_id]
 
-    def peer_peerlist(self, nodes):
-        for x in nodes:
-            self.nodelist.update(x)
-    
-    def _attempt_peer(self, endpoint):
-        self.connection._join(endpoint)
         
-    def manage_peers(self):        
-        while not self.connection.shutdown:
-            if not self.peers:
-                # try to bootstrap from any known node
-                for x in self.seeds + [ "{0}:{1}".format(x.address, x.port)
-                                       for x in self.nodelist.get_all() ]:
-                    self._attempt_peer(x)
-                    if self.peers:
-                        break
-            elif len(self.peers) < self.max_peers:
-                # manage existing peers
-                for x in [ "{0}:{1}".format(x.address, x.port)
-                          for x in self.nodelist.get_all() if not x.node_id in self.peers ]:
-                    self._attempt_peer(x)
-                    if len(self.peers) >= self.max_peers:
-                        break
-            gevent.sleep(10)
-    
 class Node(object):
-        
+    """
+    Represents a node in the peer to peer network
+    and its related details/statistics.
+    """
     def __init__(self, node_id, address, port):
+        """
+        Create a new node.
+        @param node_id: The unique node key
+        @param address: IP address as string
+        @param port: Server port number as string or int
+        """
         self.node_id = node_id
         self.address = address
         self.port = int(port)
         self.hostname = socket.getfqdn(address)
-        self.first_connected = None
-        self.last_connected = None
-        self.last_activity = None
+        self.first_contact = None
+        self.last_contact = None
         self.latency_ms = 0
+        self.failures = 0
     
+    def update(self, latency_ms):
+        """
+        Update this node due to recent activity.
+        @param latency_ms: Node message latency in milliseconds.
+        """
+        if self.latency_ms:
+            # smooth by averaging over previous values
+            self.latency_ms = (self.latency_ms + latency_ms) / 2
+        else:
+            self.latency_ms = latency_ms
+            
+        if not self.first_contact:
+            self.first_contact = time_since_epoch()
+            
+        self.last_contact = time_since_epoch()
+        self.failures = 0
+        
     def to_json(self):
+        """
+        Output the current node details in json
+        @return JSON style dictionary
+        """
         return {'node_id': Node.id_to_str(self.node_id),
                 'address': self.address,
                 'port': self.port,
                 'hostname': self.hostname,
-                'first_connected': self.first_connected,
-                'last_connected': self.last_connected,
-                'last_activity': self.last_activity,
-                'latency_ms': self.latency_ms
+                'first_contact': self.first_contact,
+                'last_contact': self.last_contact,
+                'latency_ms': self.latency_ms,
+                'failures': self.failures
                 }
     
     @staticmethod
     def id_to_str(node_id):
+        """
+        @return: String representation of supplied numeric key/id.
+        """
         return str(uuid.UUID(int=node_id))
     
     @staticmethod
     def str_to_id(node_id):
+        """
+        @return: Numeric representation of supplied string key/id.
+        """
         return int(uuid.UUID(node_id))
     
     def __str__(self):
-        return '{0} - {1}:{2} ({3})'.format(Node.id_to_str(self.node_id), self.address, self.port, self.hostname)
+        """
+        @return: Brief string representation of this node.
+        """
+        return '{0} - {1}:{2} ({3})'.format(Node.id_to_str(self.node_id), 
+                                            self.address, self.port, 
+                                            self.hostname)
 
 class RoutingBin(object):
-
-    def __init__(self):
+    """
+    List of active nodes up to K size.
+    Designated as 'k-buckets' in Kademlia literature.
+    Intended for use as leaves of RoutingZones tree it acts as
+    an LRU cache for known nodes but with a preference to keep nodes
+    that have been active the longest duration.
+    """
+    def __init__(self, maxsize=K):
+        self.maxsize = maxsize
         self.nodes = OrderedDict()
-    
+        self.replacements = OrderedDict()
+        
     def get_by_id(self, node_id):
+        """
+        Return the node corresponding to the supplied id.
+        @param node_id: Id of node to lookup.
+        @return Node with node_id or None if not found.
+        """
+        return self.nodes.get(node_id)
+    
+    def get_by_address(self, address, port):
+        """
+        Return the node corresponding to the supplied address details.
+        @param address: IP Address of node to lookup.
+        @param port: Port number of node to lookup.
+        @return Node with specified details or None id not found.
+        """
         for x in self.nodes.values():
-            if x.node_id == node_id:
+            if x.address == address and x.port == port:
                 return x
         return None
     
-    def get_by_addr(self, addr, port):
-        return self.nodes.get((addr, port))
-    
     def get_all(self):
+        """
+        Return all nodes in this routing bin.
+        @return List of nodes.
+        """
         return self.nodes.values()
     
     def get_node_ids(self):
-        return [ x.node_id for x in self.get_all() ]
+        """
+        Return Ids of all nodes in this routing bin.
+        @return List of node ids.
+        """
+        return self.nodes.keys()
     
+    def push(self, node):
+        """
+        Adds the supplied node into the routing bin.
+        If the bin is full it will overflow into the
+        replacement cache.
+        @param node: Node to be added.
+        """
+        node_id = node.node_id
+        if self.remaining():
+            self.nodes[node_id] = node
+        else:
+            # add to replacement cache
+            # ensure pushed to end as most recent
+            if node_id in self.replacements:
+                self.replacements.pop(node_id)
+            self.replacements[node_id] = node
+            # trim if needed
+            if self.replacements > self.maxsize:
+                self.replacements.popitem()
+                
     def get_oldest(self):
-        node = None
-        for x in self.nodes.values():
-            if not node \
-                or (not node.last_connected and x.last_connected) \
-                or (x.last_connected and x.last_connected < node.last_connected):
-                node = x
-        return node
+        """
+        Returns the node that hasn't had activity for the 
+        longest duration.
+        @return: Oldest node in the active list.
+        """
+        return self.nodes.values()[0]
+    
+    def pop(self, node_id):
+        """
+        Removes the specified node from the routing bin.
+        The node's place may be taken by another waiting
+        in the replacement cache.
+        @param node_id: Node to remove.
+        @return: The node that was removed from the bin.
+        """
+        # promote a replacement node if available
+        if self.replacements:
+            repl = self.replacements.popitem(last=True)
+            self.nodes[repl.node_id] = repl
+        return self.nodes.pop(node_id)
     
     def get_closest_to(self, target, max_nodes=1):
+        """
+        Return the node/s whose distance is the closest to the 
+        supplied target id.
+        @param target: Target Id for distance
+        @param max_nodes: Maximum number of nodes to return.
+        @return: A list of closest nodes with 0 < len() <= max_nodes
+        """
         distances = sorted([ distance(x, target) for x in self.get_node_ids() ])
         distances = distances[:max_nodes]
         return [ self.get_by_id(distance(target, x)) for x in distances ]
     
-    def size(self):
-        return len(self.nodes)
-    
     def remaining(self):
-        return K - self.size()
-    
-    def push_to_bottom(self, node):
-        del self.nodes[(node.address, node.port)]
-        self.nodes[(node.address, node.port)] = node
-        
-    def update(self, node):
-        """Return a node guaranteed to be in the table
-        with the values contained in supplied node.
         """
-        n = self.nodes.get((node.address, node.port))
-        if n:
-            if node.latency_ms:
-                n.latency_ms = node.latency_ms
-            if node.last_connected:
-                n.last_connected = node.last_connected
-            if not n.first_connected:
-                n.first_connected = node.first_connected
-        else:
-            self.nodes[(node.address, node.port)] = node
-            n = node
-
-        n.last_activity = time_since_epoch()
-        return n
+        @return: The remaining space for active nodes in this bin.
+        """
+        return self.maxsize - len(self)
+    
+    def update(self, node_id):
+        """
+        Updates the specified node as having recent activity.
+        @param node_id: Id of the node to move in list.
+        """
+        node = self.nodes.pop(node_id)
+        self.nodes[node_id] = node
+        
+    def __len__(self):
+        """
+        @return: The number of active nodes in this bin.
+        """
+        return len(self.nodes)
+        
     
     
 class RoutingZone(object):
-    
-    def __init__(self, root, depth, index, node_id):
-        self.root = root
-        self.children = [None, None]
-        self.index = index
-        self.depth = depth
-        self.routing_bin = RoutingBin()
+    """
+    RoutingZones make up the routing tree of known/active nodes.
+    Only leaves can contain routing bins with nodes.
+    The term zone is used to avoid overloading the use of
+    the word node.
+    """
+    def __init__(self, node_id, parent=None, depth=0, prefix='',
+                 bdepth=B, binsize=K):
+        """
+        Creates a new zone in the routing tree.
+        @param node_id: The id of our node (must be constant for entire tree).
+        @param parent: This zone's parent, None for root.
+        @param depth: How deep this zone is in the tree, 0 for root.
+        @param prefix: String representation of the common routing prefix
+        this zone represents. 
+        @param bdepth: Extra depth allowed to split to in non-node_id 
+        subtrees.  This allows greater knowledge of the network for faster
+        lookups.
+        @param binsize: Max size of routing bins for each leaf.
+        """
         self.node_id = node_id
+        self.parent = parent
+        self.depth = depth
+        self.prefix = prefix
+        self.bdepth = bdepth
+        self.routing_bin = RoutingBin(binsize)
+        self.children = [None, None]
         
     def add(self, node):
+        """
+        Add the specified node into the tree.
+        Node is assumed to not already exist and is not guaranteed
+        to be added if the routing zone is full for its given prefix.
+        @param node: Node to add.
+        """
+        # split if needed
+        if self._can_split():
+            self._split()
+        # still a leaf
         if self.is_leaf():
-            if self.can_split():
-                self.split()
-
-            # still a leaf...
-            if self.is_leaf() and self.routing_bin.remaining():
-                self.routing_bin.update(node)
-            # otherwise we've reached limit
-            # TODO replace or discard logic
+            self.routing_bin.push(node)
         else:
             index = bit_number(distance(self.node_id, node.node_id), self.depth)
             self.children[index].add(node)
+    
+    def remove(self, node):
+        """
+        Remove the specified node from the tree.
+        The node may not actually be removed if there is still
+        available space in the routing zone for its given prefix.
+        @param node: Node to remove.
+        """
+        if self.is_leaf():
+            # only remove if bin is full, otherwise leave stale
+            # node as is, in case comes back online (it may be our node
+            # that has lost connectivity and we don't want to drop our
+            # entire node tree as a result)
+            if not self.routing_bin.remaining():
+                self.routing_bin.pop(node.node_id)
+            # so will leaves ever be consolidated?
+            # may need to revise above logic...
+            if self.parent._can_consolidate():
+                self.parent._consolidate()
+        else:
+            index = bit_number(distance(self.node_id, node.node_id), self.depth)
+            self.children[index].remove(node)
             
     def is_leaf(self):
-        return self.routing_bin
+        """
+        @return: True if this zone is a leaf, otherwise False.
+        """
+        return self.routing_bin is not None
     
-    def can_split(self):
-        return self.depth <= KEY_BITS and \
-            not self.routing_bin.remaining() and \
-            (self.node_id in self.routing_bin.get_node_ids() or \
-             self.depth < B)
-            
     def get_node_by_id(self, node_id):
+        """
+        Find the node with the specified Id.
+        @param node_id: Id of node to find
+        @return: The corresponding node or None if not found.
+        """
         if self.is_leaf():
             return self.routing_bin.get_by_id(node_id)
         else:
@@ -294,47 +362,111 @@ class RoutingZone(object):
             return node
     
     def get_node_by_addr(self, address, port):
+        """
+        Find the node with the specified address and port.
+        @param address: IP address of node to find
+        @param port: UDP port number of node to find
+        @return: The corresponding node or None if not found.
+        """
         if self.is_leaf():
-            return self.routing_bin.get_by_addr(address, port)
+            return self.routing_bin.get_by_address(address, port)
         else:
             node = self.children[0].get_node_by_addr(address, port)
             if not node:
                 node = self.children[1].get_node_by_addr(address, port)
             return node
 
-    def get_all_nodes(self, depth=KEY_BITS-1):
+    def get_all_nodes(self):
+        """
+        @return List of all active nodes in tree
+        """
         nodes = []
-        if not depth:
-            return nodes
         if self.is_leaf():
             return self.routing_bin.get_all()
         else:
-            nodes += self.children[0].get_all_nodes(depth-1)
-            nodes += self.children[1].get_all_nodes(depth-1)
+            nodes += self.children[0].get_all_nodes()
+            nodes += self.children[1].get_all_nodes()
             return nodes
     
-    def closest_to(self, target, distance, max_nodes):
-        return []
-    
+    def closest_to(self, target, max_nodes=K):
+        """
+        Find and return the specified number of nodes
+        closest in XOR distance to the supplied target value.
+        @param target: Target id to calculate distance
+        @param max_nodes: Maximum number of nodes to return
+        @return: List of nodes where len() <= max_nodes.  Fewer
+        nodes will be returned if there are not max_nodes available
+        in the tree.
+        """
+        if self.is_leaf():
+            return self.routing_bin.get_closest_to(target, max_nodes)
+        else:
+            index = bit_number(distance(self.node_id, target), self.depth)
+            nodes = self.children[index].closest_to(target, max_nodes)
+            # not enough nodes.. try other side
+            if len(nodes) < max_nodes:
+                nodes += self.children[not index].closest_to(
+                                            target, max_nodes-len(nodes))
+            return nodes
+            
     def max_depth(self):
+        """
+        @return: Maximum depth level of the tree.
+        """
         if self.is_leaf():
             return self.depth
         else:
             return max(self.children[0].max_depth(), 
                        self.children[1].max_depth())
+            
+    def _can_split(self):
+        """
+        @return: True if this zone is eligible to split, otherwise False.
+        """
+        return self.is_leaf() and self.depth < KEY_BITS and \
+            not self.routing_bin.remaining() and \
+            (self.node_id in self.routing_bin.get_node_ids() or \
+             self.depth < self.bdepth)
+            
+    def _can_consolidate(self):
+        """
+        @return: True if this zone is eligible to consolidate, otherwise False.
+        """
+        # do the routing bins really need to be empty?
+        return not self.is_leaf() and \
+            not len(self.children[0].routing_bin) and \
+            not len(self.children[1].routing_bin)
     
-    def consolidate(self):
+    def _consolidate(self):
+        """
+        Causes this zone to roll-up its child zone and become
+        a leaf zone itself.
+        """
         assert not self.is_leaf()
-        self.routing_bin = RoutingBin()
+        self.routing_bin = RoutingBin(self.binsize)
         for x in self.children[0].routing_bin.get_all() + \
             self.children[1].routing_bin.get_all():
-            self.routing_bin.update(x)
+            self.routing_bin.push(x)
         self.children = [None, None]
     
-    def split(self):
+    def _split(self):
+        """
+        Causes this leaf node to split its node list into two
+        child zones and become a branch instead.
+        """
         assert self.is_leaf()
-        self.children[0] = RoutingZone(self, self.depth+1, self.index, self.node_id)
-        self.children[1] = RoutingZone(self, self.depth+1, self.index, self.node_id)
+        self.children[0] = RoutingZone(self.node_id, 
+                                       self, 
+                                       self.depth+1, 
+                                       self.prefix + '0',
+                                       self.bdepth,
+                                       self.routing_bin.maxsize)
+        self.children[1] = RoutingZone(self.node_id, 
+                                       self, 
+                                       self.depth+1, 
+                                       self.prefix + '1',
+                                       self.bdepth,
+                                       self.routing_bin.maxsize)
         # split based on matching prefix
         for x in self.routing_bin.get_all():
             index = bit_number(distance(self.node_id, x.node_id), self.depth)

@@ -15,8 +15,8 @@
 # along with this program.  If not, see <http://www.gnu.org/licenses/>.
 import gevent
 
-from peerz.core import Connection
-from zmq import ZMQError
+from peerz.core import Network
+from peerz.protocol import ConnectionError
 
 SEED = 'localhost:7111'
 ROOT = '/tmp/helloworld'
@@ -26,25 +26,25 @@ def main():
     node = None
     while not node:
         try:
-            conn = Connection(port, ROOT)
-            conn.join([SEED])
-            node = conn.get_local()
-        except ZMQError:
+            net = Network(port, ROOT)
+            net.join([SEED])
+            node = net.get_local()
+        except ConnectionError:
             port+=1
             print "Unable to bind to socket, trying next port: {0}".format(port)
 
     try:
         while True:
             print node
-            if not conn.get_peers():
+            if not net.get_peers():
                 print " - No peers"
 
-            for x in conn.get_peers():
+            for x in net.get_peers():
                 print " - {0}".format(x.to_json())
             gevent.sleep(10)
     except KeyboardInterrupt:
         print 'Exiting...'
-        conn.leave()
+        net.leave()
         
 if __name__ == '__main__':
     main()
