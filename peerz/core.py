@@ -18,12 +18,15 @@ import logging
 import socket
 
 import gevent
+from gevent.pool import Pool
 
 from peerz.persistence import LocalStorage
 from peerz.transport import Connection, ConnectionPool, ConnectionError, Server
-from peerz.routing import generate_id, Node, RoutingZone
+from peerz.routing import distance, generate_id, Node, RoutingZone
 
 LOG = logging.Logger(__name__)
+# simultaneous requests
+A = 3
 
 class Network(object):
     """
@@ -31,7 +34,7 @@ class Network(object):
     a nodes connection into the p2p network.
     """ 
     
-    def __init__(self, port, storage):
+    def __init__(self, port, storage, parallel_requests=A):
         """
         Creates a new (not yet connected) network object.
         @param port: Listener/server port for this node.
@@ -41,6 +44,7 @@ class Network(object):
         self.port = port
         # eventually cater for external IPs / UPNP / port forwarding
         self.addr = socket.gethostbyname(socket.gethostname())
+        self.req_pool = Pool(parallel_requests)
         self.storage = storage
         self.server = None
         # Tree of known nodes
@@ -94,6 +98,7 @@ class Network(object):
                              self.node.port, self)
         gevent.spawn(self.server.dispatch)
         self._bootstrap(seeds)
+        gevent.spawn(self._peer_maintenance)
             
     def leave(self):
         """
@@ -147,31 +152,86 @@ class Network(object):
         """
         pass
     
+    def find_nodes(self, target_id):
+        nodes = self.nodetree.closest_to(target_id)
+        self.req_pool.map(self._find_nodes_request, 
+                          zip(nodes, [ target_id for i in range(len(nodes))] ))
+    
+    def _find_nodes_request(self, arg):
+        peer, target_id = arg
+        try:
+            conn = self.connection_pool.fetch(peer)
+            nodes, rtt = conn.find_nodes(target_id)
+            peer.update(rtt)
+            for peer_id, peer_addr, peer_port in nodes:
+                node = self.nodetree.get_node_by_id(peer_id)
+                if not node:
+                    node = Node(peer_id, peer_addr, peer_port)
+                    self.nodetree.add(node)
+                    closest =  self.nodetree.closest_to(target_id, 1)[0]
+                    if distance(peer_id, target_id) < \
+                        distance(closest.node_id, target_id):
+                        self._find_nodes_request(node, target_id)
+        except ConnectionError:
+            peer.failures += 1
+    
+    def _peer_maintenance(self):
+        while not self.shutdown:
+            # keep neighbourhood fresh
+            self.find_nodes(self.node.node_id)
+            # randomly refresh other routing zones
+            # could be smarter about selection of ranges here...
+            self.find_nodes(generate_id())
+            gevent.sleep(60)
+            
     def handle_node_seen(self, peer_id, peer_addr, peer_port):
+        """
+        Callback when activity from a peer is seen.
+        @param peer_id: Id (long) of peer performing activity
+        @param peer_addr: Endpoint IP address of peer
+        @param peer_port: Endpoint Port number of peer
+        """
         node = self.nodetree.get_node_by_id(peer_id)
         if not node:
             node = Node(peer_id, peer_addr, peer_port)
             self.nodetree.add(node)
 
     def handle_find_nodes(self, peer_id, target):
+        """
+        Callback for a find_nodes query from a peer.
+        @param peer_id: Id (long) of peer performing request
+        @param peer_addr: Endpoint IP address of peer
+        @param peer_port: Endpoint Port number of peer
+        @return: List of node tuples (id, addr, port) to return to peer.
+        """
         LOG.debug("Finding nodes for peer: {0} target: {1}" \
                   .format(peer_id, target))
         return [ (x.node_id, x.address, x.port) 
                 for x in self.nodetree.closest_to(target) ]
         
     def _bootstrap(self, seeds):
+        """
+        Given a list of seeds attempt to make a connection into the
+        p2p network and discover neighbours.
+        @param seeds: List of "ip:port" peers to attempt ot bootstrap from
+        """
         if not seeds:
             raise ValueError('Seeds list must not be empty and must contain '
                              'endpoints in "address:port" format.')
         untried = list(seeds)
         self.nodetree.add(self.node)
-        while len(self.nodetree.get_all_nodes()) < 2:
+        while len(self.nodetree.get_all_nodes()) < 2: # ignore self
             if not untried:
                 gevent.sleep(5)
                 untried = list(seeds)
             self._bootstrap_from_peer(untried.pop())
+        self.find_nodes(self.node.node_id)
                 
     def _bootstrap_from_peer(self, endpoint):
+        """
+        Bootstrap from the given peer endpoint details.
+        @param endpoint: Endpoint string "id:port" of peer to attempt
+        """
         addr, port = endpoint.split(':')
         try:
             LOG.debug("Attempting to bootstrap from {0}".format(endpoint))
@@ -194,10 +254,16 @@ class Network(object):
 
 
     def _dump_state(self):
+        """
+        Dump local state for persistence between runs.
+        """
         self.localstore.store('node', self.node)
         self.localstore.store('nodetree', self.nodetree)
     
     def _load_state(self):
+        """
+        Reload any persisted state.
+        """
         self.node = self.localstore.fetch('node')
         self.nodetree = self.localstore.fetch('nodetree')
      
