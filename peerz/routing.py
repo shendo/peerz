@@ -327,15 +327,9 @@ class RoutingZone(object):
         @param node: Node to remove.
         """
         if self.is_leaf():
-            # only remove if bin is full, otherwise leave stale
-            # node as is, in case comes back online (it may be our node
-            # that has lost connectivity and we don't want to drop our
-            # entire node tree as a result)
-            if not self.routing_bin.remaining():
-                self.routing_bin.pop(node.node_id)
-            # so will leaves ever be consolidated?
-            # may need to revise above logic...
-            if self.parent._can_consolidate():
+            self.routing_bin.pop(node.node_id)
+
+            if self.parent and self.parent._can_consolidate():
                 self.parent._consolidate()
         else:
             index = bit_number(distance(self.node_id, node.node_id), self.depth)

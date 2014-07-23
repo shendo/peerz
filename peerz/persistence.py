@@ -26,6 +26,12 @@ except:
 class LocalStorage(object):
     
     def __init__(self, root, port):
+        """
+        Create a new local persistence store.
+        @param root: Filesystem path to use as base
+        @param port: Port number to uniquely identify this 
+        node instance on the local host.
+        """
         self.port = port
         self.rootpath = os.path.join(root, str(port))
         try:
@@ -33,28 +39,24 @@ class LocalStorage(object):
         except OSError:
             pass
         
-    def store(self, key, contents, node_id=None):        
-        if node_id:
-            path = os.path.join(self.rootpath, node_id)
-        else:
-            path = self.rootpath
-        
-        try:
-            os.makedirs(path)
-        except OSError:
-            pass
-        
-        with open(os.path.join(path, key), 'wb') as tmp:
+    def store(self, key, contents):
+        """
+        Persist the given data for this node.
+        @param key: Unique string identifier
+        @param contents: Any serialisable python object
+        """
+        with open(os.path.join(self.rootpath, key), 'wb') as tmp:
             tmp.write(serialiser.dumps(contents))
 
-    def fetch(self, key, node_id=None):
-        if node_id:
-            path = os.path.join(self.rootpath, node_id, key)
-        else:
-            path = os.path.join(self.rootpath, key)
+    def fetch(self, key):
+        """
+        Retrieve the specified data from this local storage.
+        @param key: Unique string identifier
+        @return: The original python object stored for that key
+        or None if unknown/unavailable.
+        """
+        path = os.path.join(self.rootpath, key)
         if not os.path.exists(path):
             return None
         with open(path, 'rb') as tmp:
             return serialiser.loads(tmp.read())
-
-        

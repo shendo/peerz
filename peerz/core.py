@@ -27,6 +27,11 @@ from peerz.routing import distance, generate_id, Node, RoutingZone
 LOG = logging.Logger(__name__)
 # simultaneous requests
 A = 3
+# number of comms fails to node before evicting from node tree
+MAX_NODE_FAILS = 2
+# automatic find_nodes request poll cycles in seconds
+NEIGHBOURHOOD_POLL = 120
+STALE_POLL = 600
 
 class Network(object):
     """
@@ -87,18 +92,20 @@ class Network(object):
     
     def join(self, seeds):
         """
-        Attempt to connect this node into the network.
-        Handle case where we are the first node and do not yet have available peers.
+        Attempt to connect this node into the network and initiate node 
+        discovery/maintenance.
         @param seeds: List of seeds 'addr:port' to attempt to bootstrap from.
         @raise ConnectionError: Unable to bind to server socket.
         """
         
-        LOG.info("Joining network")
+        LOG.info("Joining network with node Id: {0}" \
+                 .format(Node.id_to_str(self.node.node_id)))
         self.server = Server(self.node.node_id, self.node.address,
                              self.node.port, self)
         gevent.spawn(self.server.dispatch)
-        self._bootstrap(seeds)
-        gevent.spawn(self._peer_maintenance)
+        self._bootstrap(seeds) # block until we successfully bootstrap
+        gevent.spawn(self._refresh_neighbours)
+        gevent.spawn(self._refresh_random)
             
     def leave(self):
         """
@@ -153,6 +160,10 @@ class Network(object):
         pass
     
     def find_nodes(self, target_id):
+        """
+        Recursively find the nodes closest to the specified target_id.
+        @param target_id: Id as long to find closest node/s to
+        """
         nodes = self.nodetree.closest_to(target_id)
         self.req_pool.map(self._find_nodes_request, 
                           zip(nodes, [ target_id for i in range(len(nodes))] ))
@@ -171,18 +182,29 @@ class Network(object):
                     closest =  self.nodetree.closest_to(target_id, 1)[0]
                     if distance(peer_id, target_id) < \
                         distance(closest.node_id, target_id):
-                        self._find_nodes_request(node, target_id)
+                        self._find_nodes_request((node, target_id))
         except ConnectionError:
             peer.failures += 1
+            if peer.failures >= MAX_NODE_FAILS:
+                self.nodetree.remove(peer)
     
-    def _peer_maintenance(self):
+    def _refresh_neighbours(self):
         while not self.shutdown:
+            gevent.sleep(NEIGHBOURHOOD_POLL)
             # keep neighbourhood fresh
+            LOG.info("Refreshing nearest neighbours")
             self.find_nodes(self.node.node_id)
+            self._dump_state()
+
+    def _refresh_random(self):
+        while not self.shutdown:
+            gevent.sleep(STALE_POLL)
             # randomly refresh other routing zones
             # could be smarter about selection of ranges here...
-            self.find_nodes(generate_id())
-            gevent.sleep(60)
+            random_id = generate_id()
+            LOG.info("Refreshing random zone, centered around: {0}" \
+                     .format(Node.id_to_str(random_id)))
+            self.find_nodes(random_id)
             
     def handle_node_seen(self, peer_id, peer_addr, peer_port):
         """
@@ -257,6 +279,7 @@ class Network(object):
         """
         Dump local state for persistence between runs.
         """
+        LOG.info("Storing latest network state")
         self.localstore.store('node', self.node)
         self.localstore.store('nodetree', self.nodetree)
     

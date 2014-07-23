@@ -1,5 +1,5 @@
 from collections import OrderedDict
-from functools import update_wrapper
+from functools import update_wrapper, wraps
 import time
 
 import zmq.green as zmq
@@ -60,6 +60,39 @@ def unpack_node(node_str):
     x = node_str.split(':')
     return (Node.str_to_id(x[0]), x[1], x[2])
 
+def timer(f):
+    """
+    Time the given function and return the duration
+    in milliseconds.
+    If the wrapped function does not return a value itself, 
+    the duration is the return value, otherwise the function
+    returns a tuple of (original value, duration).
+    """
+    @wraps(f)
+    def wrapper(*args, **kwargs):
+        start = time.time()
+        ret = f(*args, **kwargs)
+        duration = (time.time() - start) * 1000
+        # need to be sure we don't wrap any function
+        # that can return None as a valid value
+        if ret is None:
+            return duration
+        return ret, duration
+    return wrapper
+
+def zmqerror_adapter(f):
+    """
+    Reraise any thrown ZMQErrors as our ConnectionError
+    type instead.
+    """
+    @wraps(f)
+    def wrapper(*args, **kwargs):
+        try:
+            return f(*args, **kwargs)
+        except zmq.ZMQError, ex:
+            raise ConnectionError(str(ex))
+    return wrapper
+
 class ConnectionPool(object):
     """
     Simple LRU connection pool for client connections.
@@ -109,7 +142,8 @@ class Connection(object):
 
     def __exit__(self, type, value, tb):
         self.close()
-        
+    
+    @zmqerror_adapter
     def __init__(self, node_id, addr, port, peer, ctx=None):
         """
         Create a new connection to the specified peer.
@@ -121,31 +155,29 @@ class Connection(object):
         """
         self.node = pack_node(node_id, addr, port)
         self.peer = peer
-        try:
-            if not ctx:
-                self.ctx = zmq.Context()
-                self.ctx_managed = True
-            else:
-                self.ctx = ctx
-                self.ctx_managed = False
-            self.socket = Socket(self.ctx, zmq.REQ)
-            self.socket.connect("tcp://{0}:{1}".format(peer.address, peer.port))
-        except zmq.ZMQError, ex:
-            raise ConnectionError(str(ex))
+        if not ctx:
+            self.ctx = zmq.Context()
+            self.ctx_managed = True
+        else:
+            self.ctx = ctx
+            self.ctx_managed = False
+        self.socket = Socket(self.ctx, zmq.REQ)
+        self.socket.connect("tcp://{0}:{1}".format(peer.address, peer.port))
     
+    @timer
+    @zmqerror_adapter
     def ping(self):
         """
         Ping the peer.
         @return: Round trip time in ms
         """
         msg = headers(self.node, 'PING')
-        start = time.time()
         self.socket.send_multipart(msg)
         resp = self.socket.recv_multipart()
-        rtt = time.time() - start
         splitmsg(resp)
-        return rtt
         
+    @timer
+    @zmqerror_adapter
     def find_nodes(self, target_id):
         """
         Request the peers list of closest nodes to the given target.
@@ -154,15 +186,14 @@ class Connection(object):
         round trip time in ms
         """
         msg = headers(self.node, 'FNOD')
-        msg.append(Node.id_to_str(target_id))
-        start = time.time() 
+        msg.append(Node.id_to_str(target_id)) 
         self.socket.send_multipart(msg)
         resp = self.socket.recv_multipart()
-        rtt = time.time() - start
         peer_id, peer_addr, peer_port, msgtype, extra = splitmsg(resp)
         nodes = [ unpack_node(x) for x in extra ]
-        return nodes, rtt
+        return nodes
     
+    @zmqerror_adapter
     def close(self):
         """
         Teardown this connection
@@ -175,6 +206,7 @@ class Server(object):
     """
     The server socket for the given node.
     """
+    @zmqerror_adapter
     def __init__(self, node_id, addr, port, listener):
         """
         Creates a new server (bound but not dispatching messages)
@@ -183,15 +215,12 @@ class Server(object):
         @param port: Port number to listen on
         @param listener: Callback object to receive handle_* function calls
         """
-        try:
-            self.ctx = zmq.Context()
-            self.sock = Socket(self.ctx, zmq.REP)
-            self.sock.bind("tcp://*:{0}".format(port))
-            self.node = pack_node(node_id, addr, port)
-            self.shutdown = False
-            self.listener = listener
-        except zmq.ZMQError, ex:
-            raise ConnectionError(str(ex))
+        self.ctx = zmq.Context()
+        self.sock = Socket(self.ctx, zmq.REP)
+        self.sock.bind("tcp://*:{0}".format(port))
+        self.node = pack_node(node_id, addr, port)
+        self.shutdown = False
+        self.listener = listener
         
     def dispatch(self):
         """
@@ -214,7 +243,8 @@ class Server(object):
             if msgtype == 'PING':
                 resp = headers(self.node, 'PONG')
             elif msgtype == 'FNOD':
-                nodes = self.listener.handle_find_nodes(peer_id, Node.str_to_id(extra[0]))
+                target_id = Node.str_to_id(extra[0])
+                nodes = self.listener.handle_find_nodes(peer_id, target_id)
                 resp = headers(self.node, 'FNOD')
                 resp += [ pack_node(x[0], x[1], x[2]) for x in nodes ]
             else:
@@ -224,7 +254,7 @@ class Server(object):
             # can we drop a client conn with REQ/REP?
             resp.append(str(ex))
         self.sock.send_multipart(resp)
-            
+
 # http://lucumr.pocoo.org/2012/6/26/disconnects-are-good-for-you/
 class Socket(zmq.Socket):
     def on_timeout(self):
