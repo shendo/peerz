@@ -8,7 +8,7 @@ from version import __protocol__ as PROTOCOL_VERSION
 from routing import Node
 
 PROTOCOL_NAME = 'PEERZ'
-DEFAULT_TIMEOUT = 20
+DEFAULT_TIMEOUT = 10
 
 def headers(node, msgtype):
     """
