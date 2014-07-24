@@ -103,7 +103,7 @@ class Network(object):
         self.server = Server(self.node.node_id, self.node.address,
                              self.node.port, self)
         gevent.spawn(self.server.dispatch)
-        self._bootstrap(seeds) # block until we successfully bootstrap
+        self._bootstrap(seeds)
         gevent.spawn(self._refresh_neighbours)
         gevent.spawn(self._refresh_random)
             
@@ -179,8 +179,8 @@ class Network(object):
                 if not node:
                     node = Node(peer_id, peer_addr, peer_port)
                     self.nodetree.add(node)
-                    closest =  self.nodetree.closest_to(target_id, 1)[0]
-                    if distance(peer_id, target_id) < \
+                    closest = self.nodetree.closest_to(target_id, 1)[0]
+                    if distance(peer_id, target_id) <= \
                         distance(closest.node_id, target_id):
                         self._find_nodes_request((node, target_id))
         except ConnectionError:
