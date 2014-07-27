@@ -129,7 +129,7 @@ class ConnectionPool(object):
             conn = Connection(self.node_id, self.addr, self.port, peer, self.ctx)
         self.pool[peer.node_id] = conn
         if len(self.pool) > self.maxsize:
-            old = self.pool.popitem(last=False)
+            _, old = self.pool.popitem(last=False)
             old.close()
         return conn
 
