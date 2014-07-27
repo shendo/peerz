@@ -30,12 +30,11 @@ def main():
             net.join([SEED])
             node = net.get_local()
         except ConnectionError:
-            port+=1
+            port += 1
             print "Unable to bind to socket, trying next port: {0}".format(port)
 
     try:
         while True:
-            print node
             if not net.get_peers():
                 print " - No peers"
 
