@@ -467,3 +467,59 @@ class RoutingZone(object):
             self.children[index].add(x)
 
         self.routing_bin = None
+        
+    def visualise(self):
+        """
+        Generate a dot file representing this routing zone/tree.
+        This can help in debugging/visualising the current peer state.
+        Content can be rendered using graphviz, google charts api, 
+        or similar tool.
+        @return String buffer with dot syntax reprensenting the tree.
+        """
+        return 'digraph G{{graph[ranskep=0];' \
+            'node[shape=record];{0}{1}}}' \
+                .format(self._generate_dot_nodes(),
+                        self._generate_dot_edges())
+        
+    def _generate_dot_nodes(self):
+        """
+        Generate the dot node definitions for the digraph.
+        @return String in dot syntax
+        """ 
+        def format_node(node):
+            if self.node_id == node.node_id:
+                return "{{** {0} **|{1}:{2}}}" \
+                    .format(Node.id_to_str(node.node_id), 
+                            node.address, node.port)
+            return "{{{0}|{1}:{2}}}" \
+                .format(Node.id_to_str(node.node_id), 
+                        node.address, node.port)
+        nodes = ""             
+        if self.is_leaf():
+            return '{0}[label="{{prefix={0}|{1}}}"];' \
+                .format(self.prefix or 'None',
+                    '|'.join([ format_node(x)
+                        for x in self.routing_bin.get_all() ]))
+        else:
+            nodes += '{0}[label="prefix={0}"];' \
+                .format(self.prefix or 'None')
+            nodes += self.children[0]._generate_dot_nodes()
+            nodes += self.children[1]._generate_dot_nodes()
+            return nodes
+        
+    def _generate_dot_edges(self):
+        """
+        Generate the dot edge definitions for the digraph.
+        @return String buffer in dot syntax
+        """
+        edges = ""
+        if not self.is_leaf():
+            edges += '{0}->{1}[label=0];' \
+                .format(self.prefix or 'None', 
+                    self.children[0].prefix)
+            edges += '{0}->{1}[label=1];' \
+                .format(self.prefix or 'None', 
+                    self.children[1].prefix)
+            edges += self.children[0]._generate_dot_edges()
+            edges += self.children[1]._generate_dot_edges()
+        return edges
