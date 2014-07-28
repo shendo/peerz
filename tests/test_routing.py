@@ -127,10 +127,9 @@ class TestRoutingZone(object):
         r.add(Node(0xffffffffffffffffffffffffffffff0c, '127.0.0.1', 7012))
         assert not r.is_leaf()
         assert r.max_depth() == 1
-        # left (0) is matching subtree, right (1) is non-matching
-        assert len(r.children[0].get_all_nodes()) == 6
-        assert len(r.children[1].get_all_nodes()) == 5
-        assert own_node in r.children[0].get_all_nodes()
+        assert len(r.children[0].get_all_nodes()) == 5
+        assert len(r.children[1].get_all_nodes()) == 6
+        assert own_node in r.children[1].get_all_nodes()
         
     def test_split_unbalanced(self):
         own_node = Node(0xffffffffffffffffffffffffffffff01, '127.0.0.1', 7001)

@@ -316,7 +316,7 @@ class RoutingZone(object):
         if self.is_leaf():
             self.routing_bin.push(node)
         else:
-            index = bit_number(distance(self.node_id, node.node_id), self.depth)
+            index = bit_number(node.node_id, self.depth)
             self.children[index].add(node)
     
     def remove(self, node):
@@ -332,7 +332,7 @@ class RoutingZone(object):
             if self.parent and self.parent._can_consolidate():
                 self.parent._consolidate()
         else:
-            index = bit_number(distance(self.node_id, node.node_id), self.depth)
+            index = bit_number(node.node_id, self.depth)
             self.children[index].remove(node)
             
     def is_leaf(self):
@@ -395,7 +395,7 @@ class RoutingZone(object):
         if self.is_leaf():
             return self.routing_bin.get_closest_to(target, max_nodes)
         else:
-            index = bit_number(distance(self.node_id, target), self.depth)
+            index = bit_number(target, self.depth)
             nodes = self.children[index].closest_to(target, max_nodes)
             # not enough nodes.. try other side
             if len(nodes) < max_nodes:
@@ -437,7 +437,7 @@ class RoutingZone(object):
         a leaf zone itself.
         """
         assert not self.is_leaf()
-        self.routing_bin = RoutingBin(self.binsize)
+        self.routing_bin = RoutingBin(self.children[0].routing_bin.maxsize)
         for x in self.children[0].routing_bin.get_all() + \
             self.children[1].routing_bin.get_all():
             self.routing_bin.push(x)
@@ -463,7 +463,7 @@ class RoutingZone(object):
                                        self.routing_bin.maxsize)
         # split based on matching prefix
         for x in self.routing_bin.get_all():
-            index = bit_number(distance(self.node_id, x.node_id), self.depth)
+            index = bit_number(x.node_id, self.depth)
             self.children[index].add(x)
 
         self.routing_bin = None
