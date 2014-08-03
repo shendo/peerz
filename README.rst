@@ -3,6 +3,8 @@ peerz
 
 P2P python library using ZeroMQ sockets and gevent
 
+|build_status|
+
 Overview
 --------
 
@@ -10,6 +12,9 @@ Overview
 peer-to-peer overlay network in python.  The peer management and routing logic 
 are heavily based on existing structured overlay networks such as
 ``kademlia`` and ``tapestry``. 
+
+Note: ``peerz`` is still in its early stages of development and as such no stable
+releases are yet available.
 
 Goals
 -----
@@ -43,3 +48,8 @@ requests can be made using GitHub's `issues system`_.
 
 .. _GitHub: https://github.com/shendo/peerz
 .. _issues system: https://github.com/shendo/peerz/issues
+
+.. |build_status| image:: https://secure.travis-ci.org/shendo/peerz.png?branch=master
+   :target: https://travis-ci.org/shendo/peerz
+   :alt: Current build status
+
