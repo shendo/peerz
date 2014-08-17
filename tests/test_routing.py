@@ -142,4 +142,19 @@ class TestRoutingZone(object):
         assert not r.is_leaf()
         assert r.max_depth() == 128 # will split entire key length when 'ffff..00' added
         assert len(r.get_all_nodes()) == 3 # non matching will get discarded after first split
-        
+
+    def test_consolidate(self):
+        own_node = Node(0xffffffffffffffffffffffffffffff01, '127.0.0.1', 7001)
+        r = RoutingZone(own_node.node_id, binsize=2, bdepth=1)
+        r.add(own_node)
+        r.add(Node(0x00000fffffffffffffffffffffffff03, '127.0.0.1', 7003))
+        r.add(Node(0xffffffffffffffffffffffffffffff00, '127.0.0.1', 7000))
+        r.add(Node(0x00000fffffffffffffffffffffffff05, '127.0.0.1', 7005))
+        r.add(Node(0x00000fffffffffffffffffffffffff07, '127.0.0.1', 7007))
+        r.remove(Node(0x00000fffffffffffffffffffffffff03, '127.0.0.1', 7003))
+        r.remove(Node(0xffffffffffffffffffffffffffffff00, '127.0.0.1', 7000))
+        r.remove(Node(0x00000fffffffffffffffffffffffff05, '127.0.0.1', 7005))
+        r.remove(Node(0x00000fffffffffffffffffffffffff07, '127.0.0.1', 7007))
+        assert r.is_leaf()
+        assert r.max_depth() == 0
+        assert len(r.get_all_nodes()) == 1

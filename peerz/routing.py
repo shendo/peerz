@@ -150,6 +150,7 @@ class Node(object):
                                             self.address, self.port, 
                                             self.hostname)
 
+
 class RoutingBin(object):
     """
     List of active nodes up to K size.
@@ -233,6 +234,8 @@ class RoutingBin(object):
         @param node_id: Node to remove.
         @return: The node that was removed from the bin.
         """
+        if not node_id in self.get_node_ids():
+            return None
         # promote a replacement node if available
         if self.replacements:
             repl = self.replacements.popitem(last=True)
@@ -270,8 +273,7 @@ class RoutingBin(object):
         @return: The number of active nodes in this bin.
         """
         return len(self.nodes)
-        
-    
+
     
 class RoutingZone(object):
     """
@@ -299,6 +301,7 @@ class RoutingZone(object):
         self.depth = depth
         self.prefix = prefix
         self.bdepth = bdepth
+        self.binsize = binsize
         self.routing_bin = RoutingBin(binsize)
         self.children = [None, None]
         
@@ -339,7 +342,7 @@ class RoutingZone(object):
         """
         @return: True if this zone is a leaf, otherwise False.
         """
-        return self.routing_bin is not None
+        return self.children[0] is None
     
     def get_node_by_id(self, node_id):
         """
@@ -426,20 +429,17 @@ class RoutingZone(object):
         """
         @return: True if this zone is eligible to consolidate, otherwise False.
         """
-        # do the routing bins really need to be empty?
         return not self.is_leaf() and \
-            not len(self.children[0].routing_bin) and \
-            not len(self.children[1].routing_bin)
+            len(self.get_all_nodes()) <= self.binsize / 2
     
     def _consolidate(self):
         """
-        Causes this zone to roll-up its child zone and become
+        Causes this zone to roll-up its child zones and become
         a leaf zone itself.
         """
         assert not self.is_leaf()
-        self.routing_bin = RoutingBin(self.children[0].routing_bin.maxsize)
-        for x in self.children[0].routing_bin.get_all() + \
-            self.children[1].routing_bin.get_all():
+        self.routing_bin = RoutingBin(self.binsize)
+        for x in self.get_all_nodes():
             self.routing_bin.push(x)
         self.children = [None, None]
     
