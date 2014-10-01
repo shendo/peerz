@@ -35,6 +35,7 @@ def main():
 
     try:
         while True:
+            print node
             if not net.get_peers():
                 print " - No peers"
 

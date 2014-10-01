@@ -2,7 +2,7 @@
 
 # Peerz - P2P python library using ZeroMQ sockets and gevent
 # Copyright (C) 2014 Steve Henderson
-# 
+#
 # This program is free software: you can redistribute it and/or modify
 # it under the terms of the GNU General Public License as published by
 # the Free Software Foundation, either version 3 of the License, or
@@ -35,9 +35,9 @@ setup(
     long_description=open('README.rst').read(),
     include_package_data=True,
     license="GPL",
-    install_requires = ['pyzmq>=2.2', 'gevent>=1.0.1'],
-    tests_requires = ['pytest>=2.5'],
-    classifiers = [
+    install_requires=open('requirements.txt').readlines(),
+    tests_require=['pytest>=2.5'],
+    classifiers=[
         'Development Status :: 3 - Alpha',
         'Intended Audience :: Developers',
         'License :: OSI Approved :: GNU General Public License v3 or later (GPLv3+)',
