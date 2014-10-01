@@ -20,7 +20,7 @@ def headers(node, msgtype):
     @return: List that can be sent as a multipart message.
     """
     return [PROTOCOL_NAME, PROTOCOL_VERSION, node, msgtype]
-    
+
 def splitmsg(msg):
     """
     Given a multipart message, split out the application important
@@ -35,7 +35,7 @@ def splitmsg(msg):
     protocol, version, peer, msgtype = msg[:4]
     extra = msg[4:]
     peer_id, peer_addr, peer_port = unpack_node(peer)
-    
+
     if protocol != PROTOCOL_NAME:
         raise InvalidMessage("Mismatch protocol name: {0} Expected: {1}" \
                              .format(protocol, PROTOCOL_NAME))
@@ -142,7 +142,7 @@ class Connection(object):
 
     def __exit__(self, type, value, tb):
         self.close()
-    
+
     @zmqerror_adapter
     def __init__(self, node_id, addr, port, peer, ctx=None):
         """
@@ -163,7 +163,7 @@ class Connection(object):
             self.ctx_managed = False
         self.socket = Socket(self.ctx, zmq.REQ)
         self.socket.connect("tcp://{0}:{1}".format(peer.address, peer.port))
-    
+
     @timer
     @zmqerror_adapter
     def ping(self):
@@ -175,7 +175,7 @@ class Connection(object):
         self.socket.send_multipart(msg)
         resp = self.socket.recv_multipart()
         splitmsg(resp)
-        
+
     @timer
     @zmqerror_adapter
     def find_nodes(self, target_id):
@@ -186,13 +186,13 @@ class Connection(object):
         round trip time in ms
         """
         msg = headers(self.node, 'FNOD')
-        msg.append(Node.id_to_str(target_id)) 
+        msg.append(Node.id_to_str(target_id))
         self.socket.send_multipart(msg)
         resp = self.socket.recv_multipart()
         peer_id, peer_addr, peer_port, msgtype, extra = splitmsg(resp)
         nodes = [ unpack_node(x) for x in extra ]
         return nodes
-    
+
     @zmqerror_adapter
     def close(self):
         """
@@ -201,7 +201,7 @@ class Connection(object):
         self.socket.close()
         if self.ctx_managed:
             self.ctx.term()
-    
+
 class Server(object):
     """
     The server socket for the given node.
@@ -221,7 +221,7 @@ class Server(object):
         self.node = pack_node(node_id, addr, port)
         self.shutdown = False
         self.listener = listener
-        
+
     def dispatch(self):
         """
         Start the message dispatch loop (blocking).
@@ -233,7 +233,7 @@ class Server(object):
             except TimeoutError:
                 pass
         self.ctx.term()
-        
+
     def _handle_msg(self, msg):
         resp = headers(self.node, 'FAIL')
         try:
@@ -277,7 +277,7 @@ class Socket(zmq.Socket):
             locals()[_meth] = _timeout_wrapper(getattr(zmq.Socket, _meth))
 
     del _meth, _timeout_wrapper
-        
+
 class ConnectionError(Exception):
     """
     Some error occurred with the network connection/transport.

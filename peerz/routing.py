@@ -1,6 +1,6 @@
 # Peerz - P2P python library using ZeroMQ sockets and gevent
 # Copyright (C) 2014 Steve Henderson
-# 
+#
 # This program is free software: you can redistribute it and/or modify
 # it under the terms of the GNU General Public License as published by
 # the Free Software Foundation, either version 3 of the License, or
@@ -72,9 +72,9 @@ def bit_number(node_id, bit):
     """
     if bit >= KEY_BITS:
         return 0
-    return (node_id >> (KEY_BITS - 1 - bit)) & 1 
+    return (node_id >> (KEY_BITS - 1 - bit)) & 1
 
-        
+
 class Node(object):
     """
     Represents a node in the peer to peer network
@@ -95,7 +95,7 @@ class Node(object):
         self.last_contact = None
         self.latency_ms = 0
         self.failures = 0
-    
+
     def update(self, latency_ms):
         """
         Update this node due to recent activity.
@@ -106,13 +106,13 @@ class Node(object):
             self.latency_ms = (self.latency_ms + latency_ms) / 2
         else:
             self.latency_ms = latency_ms
-            
+
         if not self.first_contact:
             self.first_contact = time_since_epoch()
-            
+
         self.last_contact = time_since_epoch()
         self.failures = 0
-        
+
     def to_json(self):
         """
         Output the current node details in json
@@ -127,27 +127,27 @@ class Node(object):
                 'latency_ms': self.latency_ms,
                 'failures': self.failures
                 }
-    
+
     @staticmethod
     def id_to_str(node_id):
         """
         @return: String representation of supplied numeric key/id.
         """
         return str(uuid.UUID(int=node_id))
-    
+
     @staticmethod
     def str_to_id(node_id):
         """
         @return: Numeric representation of supplied string key/id.
         """
         return int(uuid.UUID(node_id))
-    
+
     def __str__(self):
         """
         @return: Brief string representation of this node.
         """
-        return '{0} - {1}:{2} ({3})'.format(Node.id_to_str(self.node_id), 
-                                            self.address, self.port, 
+        return '{0} - {1}:{2} ({3})'.format(Node.id_to_str(self.node_id),
+                                            self.address, self.port,
                                             self.hostname)
 
 
@@ -163,7 +163,7 @@ class RoutingBin(object):
         self.maxsize = maxsize
         self.nodes = OrderedDict()
         self.replacements = OrderedDict()
-        
+
     def get_by_id(self, node_id):
         """
         Return the node corresponding to the supplied id.
@@ -171,7 +171,7 @@ class RoutingBin(object):
         @return Node with node_id or None if not found.
         """
         return self.nodes.get(node_id)
-    
+
     def get_by_address(self, address, port):
         """
         Return the node corresponding to the supplied address details.
@@ -183,21 +183,21 @@ class RoutingBin(object):
             if x.address == address and x.port == port:
                 return x
         return None
-    
+
     def get_all(self):
         """
         Return all nodes in this routing bin.
         @return List of nodes.
         """
         return self.nodes.values()
-    
+
     def get_node_ids(self):
         """
         Return Ids of all nodes in this routing bin.
         @return List of node ids.
         """
         return self.nodes.keys()
-    
+
     def push(self, node):
         """
         Adds the supplied node into the routing bin.
@@ -217,7 +217,7 @@ class RoutingBin(object):
             # trim if needed
             if self.replacements > self.maxsize:
                 self.replacements.popitem()
-                
+
     def get_oldest(self):
         """
         Returns the node that hasn't had activity for the 
@@ -225,7 +225,7 @@ class RoutingBin(object):
         @return: Oldest node in the active list.
         """
         return self.nodes.values()[0]
-    
+
     def pop(self, node_id):
         """
         Removes the specified node from the routing bin.
@@ -241,7 +241,7 @@ class RoutingBin(object):
             repl = self.replacements.popitem(last=True)
             self.nodes[repl.node_id] = repl
         return self.nodes.pop(node_id)
-    
+
     def get_closest_to(self, target, max_nodes=1):
         """
         Return the node/s whose distance is the closest to the 
@@ -253,13 +253,13 @@ class RoutingBin(object):
         distances = sorted([ distance(x, target) for x in self.get_node_ids() ])
         distances = distances[:max_nodes]
         return [ self.get_by_id(distance(target, x)) for x in distances ]
-    
+
     def remaining(self):
         """
         @return: The remaining space for active nodes in this bin.
         """
         return self.maxsize - len(self)
-    
+
     def update(self, node_id):
         """
         Updates the specified node as having recent activity.
@@ -267,14 +267,14 @@ class RoutingBin(object):
         """
         node = self.nodes.pop(node_id)
         self.nodes[node_id] = node
-        
+
     def __len__(self):
         """
         @return: The number of active nodes in this bin.
         """
         return len(self.nodes)
 
-    
+
 class RoutingZone(object):
     """
     RoutingZones make up the routing tree of known/active nodes.
@@ -304,7 +304,7 @@ class RoutingZone(object):
         self.binsize = binsize
         self.routing_bin = RoutingBin(binsize)
         self.children = [None, None]
-        
+
     def add(self, node):
         """
         Add the specified node into the tree.
@@ -321,7 +321,7 @@ class RoutingZone(object):
         else:
             index = bit_number(node.node_id, self.depth)
             self.children[index].add(node)
-    
+
     def remove(self, node):
         """
         Remove the specified node from the tree.
@@ -337,13 +337,13 @@ class RoutingZone(object):
         else:
             index = bit_number(node.node_id, self.depth)
             self.children[index].remove(node)
-            
+
     def is_leaf(self):
         """
         @return: True if this zone is a leaf, otherwise False.
         """
         return self.children[0] is None
-    
+
     def get_node_by_id(self, node_id):
         """
         Find the node with the specified Id.
@@ -357,7 +357,7 @@ class RoutingZone(object):
             if not node:
                 node = self.children[1].get_node_by_id(node_id)
             return node
-    
+
     def get_node_by_addr(self, address, port):
         """
         Find the node with the specified address and port.
@@ -384,7 +384,7 @@ class RoutingZone(object):
             nodes += self.children[0].get_all_nodes()
             nodes += self.children[1].get_all_nodes()
             return nodes
-    
+
     def closest_to(self, target, max_nodes=K):
         """
         Find and return the specified number of nodes
@@ -403,9 +403,9 @@ class RoutingZone(object):
             # not enough nodes.. try other side
             if len(nodes) < max_nodes:
                 nodes += self.children[not index].closest_to(
-                                            target, max_nodes-len(nodes))
+                                            target, max_nodes - len(nodes))
             return nodes
-            
+
     def max_depth(self):
         """
         @return: Maximum depth level of the tree.
@@ -413,9 +413,9 @@ class RoutingZone(object):
         if self.is_leaf():
             return self.depth
         else:
-            return max(self.children[0].max_depth(), 
+            return max(self.children[0].max_depth(),
                        self.children[1].max_depth())
-            
+
     def _can_split(self):
         """
         @return: True if this zone is eligible to split, otherwise False.
@@ -424,14 +424,14 @@ class RoutingZone(object):
             not self.routing_bin.remaining() and \
             (self.node_id in self.routing_bin.get_node_ids() or \
              self.depth < self.bdepth)
-            
+
     def _can_consolidate(self):
         """
         @return: True if this zone is eligible to consolidate, otherwise False.
         """
         return not self.is_leaf() and \
             len(self.get_all_nodes()) <= self.binsize / 2
-    
+
     def _consolidate(self):
         """
         Causes this zone to roll-up its child zones and become
@@ -442,22 +442,22 @@ class RoutingZone(object):
         for x in self.get_all_nodes():
             self.routing_bin.push(x)
         self.children = [None, None]
-    
+
     def _split(self):
         """
         Causes this leaf node to split its node list into two
         child zones and become a branch instead.
         """
         assert self.is_leaf()
-        self.children[0] = RoutingZone(self.node_id, 
-                                       self, 
-                                       self.depth+1, 
+        self.children[0] = RoutingZone(self.node_id,
+                                       self,
+                                       self.depth + 1,
                                        self.prefix + '0',
                                        self.bdepth,
                                        self.routing_bin.maxsize)
-        self.children[1] = RoutingZone(self.node_id, 
-                                       self, 
-                                       self.depth+1, 
+        self.children[1] = RoutingZone(self.node_id,
+                                       self,
+                                       self.depth + 1,
                                        self.prefix + '1',
                                        self.bdepth,
                                        self.routing_bin.maxsize)
@@ -467,7 +467,7 @@ class RoutingZone(object):
             self.children[index].add(x)
 
         self.routing_bin = None
-        
+
     def visualise(self):
         """
         Generate a dot file representing this routing zone/tree.
@@ -480,21 +480,21 @@ class RoutingZone(object):
             'node[shape=record];{0}{1}}}' \
                 .format(self._generate_dot_nodes(),
                         self._generate_dot_edges())
-        
+
     def _generate_dot_nodes(self):
         """
         Generate the dot node definitions for the digraph.
         @return String in dot syntax
-        """ 
+        """
         def format_node(node):
             if self.node_id == node.node_id:
                 return "{{** {0} **|{1}:{2}}}" \
-                    .format(Node.id_to_str(node.node_id), 
+                    .format(Node.id_to_str(node.node_id),
                             node.address, node.port)
             return "{{{0}|{1}:{2}}}" \
-                .format(Node.id_to_str(node.node_id), 
+                .format(Node.id_to_str(node.node_id),
                         node.address, node.port)
-        nodes = ""             
+        nodes = ""
         if self.is_leaf():
             return '{0}[label="{{prefix={0}|{1}}}"];' \
                 .format(self.prefix or 'None',
@@ -506,7 +506,7 @@ class RoutingZone(object):
             nodes += self.children[0]._generate_dot_nodes()
             nodes += self.children[1]._generate_dot_nodes()
             return nodes
-        
+
     def _generate_dot_edges(self):
         """
         Generate the dot edge definitions for the digraph.
@@ -515,10 +515,10 @@ class RoutingZone(object):
         edges = ""
         if not self.is_leaf():
             edges += '{0}->{1}[label=0];' \
-                .format(self.prefix or 'None', 
+                .format(self.prefix or 'None',
                     self.children[0].prefix)
             edges += '{0}->{1}[label=1];' \
-                .format(self.prefix or 'None', 
+                .format(self.prefix or 'None',
                     self.children[1].prefix)
             edges += self.children[0]._generate_dot_edges()
             edges += self.children[1]._generate_dot_edges()

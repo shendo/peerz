@@ -1,6 +1,6 @@
 # Peerz - P2P python library using ZeroMQ sockets and gevent
 # Copyright (C) 2014 Steve Henderson
-# 
+#
 # This program is free software: you can redistribute it and/or modify
 # it under the terms of the GNU General Public License as published by
 # the Free Software Foundation, either version 3 of the License, or
@@ -21,10 +21,10 @@ try:
     serialiser = cPickle
 except:
     cPickle = None
-    import pickle as serialiser 
+    import pickle as serialiser
 
 class LocalStorage(object):
-    
+
     def __init__(self, root, port):
         """
         Create a new local persistence store.
@@ -38,7 +38,7 @@ class LocalStorage(object):
             os.makedirs(self.rootpath)
         except OSError:
             pass
-        
+
     def store(self, key, contents):
         """
         Persist the given data for this node.
