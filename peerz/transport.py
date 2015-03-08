@@ -1,3 +1,19 @@
+# Peerz - P2P python library using ZeroMQ sockets and gevent
+# Copyright (C) 2014 Steve Henderson
+#
+# This program is free software: you can redistribute it and/or modify
+# it under the terms of the GNU General Public License as published by
+# the Free Software Foundation, either version 3 of the License, or
+# (at your option) any later version.
+#
+# This program is distributed in the hope that it will be useful,
+# but WITHOUT ANY WARRANTY; without even the implied warranty of
+# MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+# GNU General Public License for more details.
+#
+# You should have received a copy of the GNU General Public License
+# along with this program.  If not, see <http://www.gnu.org/licenses/>.
+
 from collections import OrderedDict
 from functools import update_wrapper, wraps
 import time
@@ -5,7 +21,6 @@ import time
 import zmq.green as zmq
 
 from version import __protocol__ as PROTOCOL_VERSION
-from routing import Node
 
 PROTOCOL_NAME = 'PEERZ'
 DEFAULT_TIMEOUT = 10
@@ -44,21 +59,21 @@ def splitmsg(msg):
 def pack_node(node_id, addr, port):
     """
     Given a tuple of basic node details, return in packed string format.
-    @param node_id: Id of node as a long
+    @param node_id: Id of node as a hex string
     @param addr: IP address of node
     @param port: Port number of node
     @return: String representation of node.
     """
-    return '{0}:{1}:{2}'.format(Node.id_to_str(node_id), addr, port)
+    return '{0}:{1}:{2}'.format(node_id, addr, port)
 
 def unpack_node(node_str):
     """
     Given a string representation of a node, return a tuple of its details.
     @param node_str: Node details in 'id:addr:port' format.
-    @return: Tuple of node_id (as long), address, port
+    @return: Tuple of node_id, address, port
     """
     x = node_str.split(':')
-    return (Node.str_to_id(x[0]), x[1], x[2])
+    return (x[0], x[1], x[2])
 
 def timer(f):
     """
@@ -100,7 +115,7 @@ class ConnectionPool(object):
     def __init__(self, node_id, addr, port, ctx=None, maxsize=20):
         """
         Initialise the pool with the supplied details.
-        @param node_id: Id of this node as a long
+        @param node_id: Id of this node as hex string
         @param addr: IP address of this node
         @param port: Port number of this node
         @param ctx: ZMQ context, will be auto created if None
@@ -147,7 +162,7 @@ class Connection(object):
     def __init__(self, node_id, addr, port, peer, ctx=None):
         """
         Create a new connection to the specified peer.
-        @param node_id: Node id (as long) of this node
+        @param node_id: Node id (as string) of this node
         @param addr: IP address of this node
         @param port: Port number of this node
         @param peer: Peer (Node obj) to create connection to
@@ -186,7 +201,7 @@ class Connection(object):
         round trip time in ms
         """
         msg = headers(self.node, 'FNOD')
-        msg.append(Node.id_to_str(target_id))
+        msg.append(target_id)
         self.socket.send_multipart(msg)
         resp = self.socket.recv_multipart()
         peer_id, peer_addr, peer_port, msgtype, extra = splitmsg(resp)
@@ -210,7 +225,7 @@ class Server(object):
     def __init__(self, node_id, addr, port, listener):
         """
         Creates a new server (bound but not dispatching messages)
-        @param node_id: Id of this node (as long)
+        @param node_id: Id of this node (as hex string)
         @param addr: IP address of this node
         @param port: Port number to listen on
         @param listener: Callback object to receive handle_* function calls
@@ -243,7 +258,7 @@ class Server(object):
             if msgtype == 'PING':
                 resp = headers(self.node, 'PONG')
             elif msgtype == 'FNOD':
-                target_id = Node.str_to_id(extra[0])
+                target_id = extra[0]
                 nodes = self.listener.handle_find_nodes(peer_id, target_id)
                 resp = headers(self.node, 'FNOD')
                 resp += [ pack_node(x[0], x[1], x[2]) for x in nodes ]

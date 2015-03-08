@@ -16,6 +16,7 @@
 
 from collections import OrderedDict
 from datetime import datetime, timedelta
+import hashlib
 import logging
 import socket
 import uuid
@@ -29,7 +30,7 @@ K = 8
 # splits/depth for non-node_id subtrees
 B = 5
 # bit length of node id/key values
-KEY_BITS = 128
+KEY_BITS = 160
 
 def time_since_epoch(future=0):
     """
@@ -38,27 +39,27 @@ def time_since_epoch(future=0):
     Precision is guaranteed to be at least to second
     resolution but may also be decimal for subseconds.
     @param future: How many seconds in future to return
-    @retrun: Seconds since 1970 epoch
+    @return: Seconds since 1970 epoch
     """
     return (datetime.utcnow() - EPOCH + timedelta(seconds=future)) \
         .total_seconds()
 
-def generate_id():
+def generate_random():
     """
     Create a new random key/id KEY_BITS in size.
     Large key sizes should minimises chances of collision.
     @return: New randomly generated id
     """
-    return int(uuid.uuid4())
+    return id_for_key(str(uuid.uuid4()))
 
 def distance(node_id1, node_id2):
     """
     The XOR distance betwen two keys/nodes.
-    @param node_id1: Node id/key 1 as long
-    @param node_id2: Node id/key 2 as long
+    @param node_id1: Node id/key 1 as hex
+    @param node_id2: Node id/key 2 as hex
     @return: The distance as long
     """
-    return node_id1 ^ node_id2
+    return int(node_id1, 16) ^ int(node_id2, 16)
 
 def bit_number(node_id, bit):
     """
@@ -66,21 +67,30 @@ def bit_number(node_id, bit):
     MSB = 0, for the specified node_id/key.
     The node_id is treated as a key of KEY_BITS length
     regardless of current size.
-    @param node_id: Node id/key as long
+    @param node_id: Node id/key as hex
     @param bit: Bit position to return
     @return: Value at bit position 'bit' or 0 if > KEY_BITS
     """
     if bit >= KEY_BITS:
         return 0
-    return (node_id >> (KEY_BITS - 1 - bit)) & 1
+    return (int(node_id, 16) >> (KEY_BITS - 1 - bit)) & 1
 
+def id_for_key(key):
+    """
+    Given an object key, map this to a node id for storage.
+    @param key: String key for storing an object.
+    @return: node_id of a target node for the given key.
+    """
+    hasher = hashlib.sha1()
+    hasher.update(key)
+    return hasher.hexdigest()
 
 class Node(object):
     """
     Represents a node in the peer to peer network
     and its related details/statistics.
     """
-    def __init__(self, node_id, address, port):
+    def __init__(self, node_id, address, port, x509=None):
         """
         Create a new node.
         @param node_id: The unique node key
@@ -90,6 +100,7 @@ class Node(object):
         self.node_id = node_id
         self.address = address
         self.port = int(port)
+        self.x509 = x509
         self.hostname = socket.getfqdn(address)
         self.first_contact = None
         self.last_contact = None
@@ -118,7 +129,7 @@ class Node(object):
         Output the current node details in json
         @return JSON style dictionary
         """
-        return {'node_id': Node.id_to_str(self.node_id),
+        return {'node_id': self.node_id,
                 'address': self.address,
                 'port': self.port,
                 'hostname': self.hostname,
@@ -127,26 +138,12 @@ class Node(object):
                 'latency_ms': self.latency_ms,
                 'failures': self.failures
                 }
-
-    @staticmethod
-    def id_to_str(node_id):
-        """
-        @return: String representation of supplied numeric key/id.
-        """
-        return str(uuid.UUID(int=node_id))
-
-    @staticmethod
-    def str_to_id(node_id):
-        """
-        @return: Numeric representation of supplied string key/id.
-        """
-        return int(uuid.UUID(node_id))
-
+    
     def __str__(self):
         """
         @return: Brief string representation of this node.
         """
-        return '{0} - {1}:{2} ({3})'.format(Node.id_to_str(self.node_id),
+        return '{0} - {1}:{2} ({3})'.format(self.node_id,
                                             self.address, self.port,
                                             self.hostname)
 
@@ -248,11 +245,11 @@ class RoutingBin(object):
         supplied target id.
         @param target: Target Id for distance
         @param max_nodes: Maximum number of nodes to return.
-        @return: A list of closest nodes with 0 < len() <= max_nodes
+        @return: A list of closest nodes with len() <= max_nodes
         """
-        distances = sorted([ distance(x, target) for x in self.get_node_ids() ])
-        distances = distances[:max_nodes]
-        return [ self.get_by_id(distance(target, x)) for x in distances ]
+        nodes = sorted(self.get_all(), key=lambda x: distance(x.node_id, target))
+        nodes = nodes[:max_nodes]
+        return nodes
 
     def remaining(self):
         """
@@ -489,10 +486,10 @@ class RoutingZone(object):
         def format_node(node):
             if self.node_id == node.node_id:
                 return "{{** {0} **|{1}:{2}}}" \
-                    .format(Node.id_to_str(node.node_id),
+                    .format(node.node_id,
                             node.address, node.port)
             return "{{{0}|{1}:{2}}}" \
-                .format(Node.id_to_str(node.node_id),
+                .format(node.node_id,
                         node.address, node.port)
         nodes = ""
         if self.is_leaf():
