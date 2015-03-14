@@ -20,9 +20,11 @@ import socket
 import gevent
 from gevent.pool import Pool
 
+from peerz.crypto import generate_self_signed_cert
 from peerz.persistence import LocalStorage
 from peerz.transport import Connection, ConnectionPool, ConnectionError, Server
-from peerz.routing import distance, generate_id, Node, RoutingZone
+from peerz.routing import distance, generate_random, id_for_key
+from peerz.routing import Node, RoutingZone, K
 
 LOG = logging.Logger(__name__)
 # simultaneous requests
@@ -84,9 +86,11 @@ class Network(object):
         """
         Remove any existing state and reset as a new node.
         """
-        self.node = Node(generate_id(),
+        self.x509 = generate_self_signed_cert()
+        self.node = Node(self.x509.get_fingerprint('sha1').lower(),
                          self.addr,
-                         self.port)
+                         self.port,
+                         self.x509.as_pem())
         self.nodetree = RoutingZone(self.node.node_id)
         self._dump_state()
 
@@ -99,7 +103,7 @@ class Network(object):
         """
 
         LOG.info("Joining network with node Id: {0}" \
-                 .format(Node.id_to_str(self.node.node_id)))
+                 .format(self.node.node_id))
         self.server = Server(self.node.node_id, self.node.address,
                              self.node.port, self)
         gevent.spawn(self.server.dispatch)
@@ -115,29 +119,29 @@ class Network(object):
         self.shutdown = True
         self.server.close()
 
-    def publish(self, content, context='default', redundancy=1, ttl=0):
+    def publish(self, key, content, context='default', redundancy=1, ttl=0):
         """
         Publish the object content into the network.
+        @param key: Identifier to lookup the object
         @param content: Object to be published.
         @param context: String label for which namespace to publish the object.
         @param redundancy: Desired minimum copies of object (not guaranteed).
         @param ttl: Time-to-live in seconds for the object.
-        @return: Object ID to use to retrieve object in future.
+        @return: Target Id of primary storage location.
         """
         return None
 
-    def unpublish(self, object_id, context='default'):
+    def unpublish(self, key, context='default'):
         """
         Best effort to remove the defined object from the network.
-        @param object_id: Identifier of object to remove.
+        @param key: Identifier of object to remove.
         @param context: Namespace to remove object from.
         """
-        pass
 
-    def fetch(self, object_id, context='default'):
+    def fetch(self, key, context='default'):
         """
         Retrieve the given object from the network.
-        @param object_id: Identifier of object to remove.
+        @param key: Identifier of object to remove.
         @param context: Namespace for object to be retrieved from.
         @return Content of requested object, None if not available.
         """
@@ -180,6 +184,7 @@ class Network(object):
             # append new nodes and resort
             closest.extend(newnodes)
             closest = sorted(closest, key=lambda x: distance(x.node_id, target_id))
+            closest[:K]
         return closest[:max_nodes]
 
     def _find_nodes_request(self, arg):
@@ -214,9 +219,9 @@ class Network(object):
             gevent.sleep(STALE_POLL)
             # randomly refresh other routing zones
             # could be smarter about selection of ranges here...
-            random_id = generate_id()
+            random_id = generate_random()
             LOG.info("Refreshing random zone, centered around: {0}" \
-                     .format(Node.id_to_str(random_id)))
+                     .format(random_id))
             self.find_nodes(random_id)
 
     def handle_node_seen(self, peer_id, peer_addr, peer_port):
