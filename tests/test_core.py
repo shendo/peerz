@@ -23,23 +23,24 @@ from peerz.routing import generate_id
 def test_find_nodes():
 
     root = tempfile.mkdtemp('peerz_test')
+    seeds = ['localhost:7001']
     try:
         # seed
         net = Network(7001, root)
-        net.join(['localhost:7001'])
+        net.join(seeds)
         node = net.get_local()
         # can find self
         assert net.find_nodes(node.node_id) != None
 
         # check for consistency across nodes
         net2 = Network(7002, root)
-        net2.join(['localhost:7001'])
+        net2.join(seeds)
         net3 = Network(7003, root)
-        net3.join(['localhost:7001'])
+        net3.join(seeds)
 
         # some more random nodes
         for i in range(7004, 7024):
-            Network(i, root).join(['localhost:7001'])
+            Network(i, root).join(seeds)
 
         # find a random id
         target = generate_id()
