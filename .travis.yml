@@ -1,9 +1,6 @@
 language: python
 env:
   - TOXENV=py27
-before_install:
-  - sudo apt-get update -qq
-  - sudo apt-get install swig
 install: 
   - pip install tox
 script: tox

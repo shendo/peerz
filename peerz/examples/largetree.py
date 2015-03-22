@@ -1,5 +1,5 @@
 # Peerz - P2P python library using ZeroMQ sockets and gevent
-# Copyright (C) 2014 Steve Henderson
+# Copyright (C) 2014-2015 Steve Henderson
 #
 # This program is free software: you can redistribute it and/or modify
 # it under the terms of the GNU General Public License as published by
@@ -31,9 +31,9 @@ def render_graph(dot):
         webbrowser.open_new_tab(tmp.name)
 
 if __name__ == '__main__':
-    node = Node(generate_random(), 'localhost', 65535)
+    node = Node('localhost', 65535, generate_random())
     nodetree = RoutingZone(node.node_id, bdepth=4, binsize=4)
     nodetree.add(node)
-    for x in xrange(1, 5000):
-        nodetree.add(Node(generate_random(), 'localhost', x))
+    for x in xrange(1, 1000):
+        nodetree.add(Node('localhost', x, generate_random()))
     render_graph(nodetree.visualise())

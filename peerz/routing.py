@@ -1,5 +1,5 @@
 # Peerz - P2P python library using ZeroMQ sockets and gevent
-# Copyright (C) 2014 Steve Henderson
+# Copyright (C) 2014-2015 Steve Henderson
 #
 # This program is free software: you can redistribute it and/or modify
 # it under the terms of the GNU General Public License as published by
@@ -14,12 +14,15 @@
 # You should have received a copy of the GNU General Public License
 # along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
+import binascii
 from collections import OrderedDict
 from datetime import datetime, timedelta
 import hashlib
 import logging
 import socket
 import uuid
+
+from zmq.utils import z85
 
 LOG = logging.Logger(__name__)
 EPOCH = datetime.utcfromtimestamp(0)
@@ -30,7 +33,7 @@ K = 8
 # splits/depth for non-node_id subtrees
 B = 5
 # bit length of node id/key values
-KEY_BITS = 160
+KEY_BITS = 256
 
 def time_since_epoch(future=0):
     """
@@ -59,7 +62,8 @@ def distance(node_id1, node_id2):
     @param node_id2: Node id/key 2 as hex
     @return: The distance as long
     """
-    return int(node_id1, 16) ^ int(node_id2, 16)
+    return long(binascii.hexlify(z85.decode(node_id1)), 16) ^ \
+        long(binascii.hexlify(z85.decode(node_id2)), 16)
 
 def bit_number(node_id, bit):
     """
@@ -73,7 +77,8 @@ def bit_number(node_id, bit):
     """
     if bit >= KEY_BITS:
         return 0
-    return (int(node_id, 16) >> (KEY_BITS - 1 - bit)) & 1
+    return (long(binascii.hexlify(z85.decode(node_id)), 16) \
+        >> (KEY_BITS - 1 - bit)) & 1
 
 def id_for_key(key):
     """
@@ -81,26 +86,27 @@ def id_for_key(key):
     @param key: String key for storing an object.
     @return: node_id of a target node for the given key.
     """
-    hasher = hashlib.sha1()
+    hasher = hashlib.sha256()
     hasher.update(key)
-    return hasher.hexdigest()
+    return z85.encode(hasher.digest())
 
 class Node(object):
     """
     Represents a node in the peer to peer network
     and its related details/statistics.
     """
-    def __init__(self, node_id, address, port, x509=None):
+    def __init__(self, address, port, node_id, secret_key=None):
         """
         Create a new node.
-        @param node_id: The unique node key
         @param address: IP address as string
         @param port: Server port number as string or int
+        @param node_id: Node id (z85 encoded public key)
+        @param secret_key: The secret key of the node, z85 encoded
         """
-        self.node_id = node_id
         self.address = address
         self.port = int(port)
-        self.x509 = x509
+        self.node_id = node_id
+        self.secret_key = secret_key
         self.hostname = socket.getfqdn(address)
         self.first_contact = None
         self.last_contact = None
@@ -138,13 +144,13 @@ class Node(object):
                 'latency_ms': self.latency_ms,
                 'failures': self.failures
                 }
-    
+
     def __str__(self):
         """
         @return: Brief string representation of this node.
         """
-        return '{0} - {1}:{2} ({3})'.format(self.node_id,
-                                            self.address, self.port,
+        return '{0}:{1} - {2} ({3})'.format(self.address, self.port,
+                                            self.node_id,
                                             self.hostname)
 
 
@@ -485,11 +491,11 @@ class RoutingZone(object):
         """
         def format_node(node):
             if self.node_id == node.node_id:
-                return "{{** {0} **|{1}:{2}}}" \
-                    .format(node.node_id,
+                return '{{** {0} **|{1}:{2}}}' \
+                    .format(binascii.hexlify(z85.decode(node.node_id)),
                             node.address, node.port)
-            return "{{{0}|{1}:{2}}}" \
-                .format(node.node_id,
+            return '{{{0}|{1}:{2}}}' \
+                .format(binascii.hexlify(z85.decode(node.node_id)),
                         node.address, node.port)
         nodes = ""
         if self.is_leaf():
@@ -520,3 +526,4 @@ class RoutingZone(object):
             edges += self.children[0]._generate_dot_edges()
             edges += self.children[1]._generate_dot_edges()
         return edges
+

@@ -1,5 +1,5 @@
 # Peerz - P2P python library using ZeroMQ sockets and gevent
-# Copyright (C) 2014 Steve Henderson
+# Copyright (C) 2014-2015 Steve Henderson
 #
 # This program is free software: you can redistribute it and/or modify
 # it under the terms of the GNU General Public License as published by
@@ -20,11 +20,12 @@ import socket
 import gevent
 from gevent.pool import Pool
 
-from peerz.crypto import generate_self_signed_cert
 from peerz.persistence import LocalStorage
 from peerz.transport import Connection, ConnectionPool, ConnectionError, Server
-from peerz.routing import distance, generate_random, id_for_key
+from peerz.routing import distance, generate_random
 from peerz.routing import Node, RoutingZone, K
+
+import zmq
 
 LOG = logging.Logger(__name__)
 # simultaneous requests
@@ -64,9 +65,7 @@ class Network(object):
         # clean start
         if not self.node:
             self.reset()
-        self.connection_pool = ConnectionPool(self.node.node_id,
-                                              self.node.address,
-                                              self.node.port)
+        self.connection_pool = ConnectionPool(self.node)
 
     def get_local(self):
         """
@@ -86,11 +85,11 @@ class Network(object):
         """
         Remove any existing state and reset as a new node.
         """
-        self.x509 = generate_self_signed_cert()
-        self.node = Node(self.x509.get_fingerprint('sha1').lower(),
-                         self.addr,
+        keys = zmq.curve_keypair()
+        self.node = Node(self.addr,
                          self.port,
-                         self.x509.as_pem())
+                         keys[0],
+                         keys[1])
         self.nodetree = RoutingZone(self.node.node_id)
         self._dump_state()
 
@@ -104,8 +103,11 @@ class Network(object):
 
         LOG.info("Joining network with node Id: {0}" \
                  .format(self.node.node_id))
-        self.server = Server(self.node.node_id, self.node.address,
-                             self.node.port, self)
+        self.server = Server(self.node.address,
+                             self.node.port,
+                             self.node.node_id,
+                             self,
+                             self.node.secret_key)
         gevent.spawn(self.server.dispatch)
         self._bootstrap(seeds)
         gevent.spawn(self._refresh_neighbours)
@@ -194,10 +196,10 @@ class Network(object):
             conn = self.connection_pool.fetch(peer)
             resp, rtt = conn.find_nodes(target_id)
             peer.update(rtt)
-            for peer_id, peer_addr, peer_port in resp:
+            for peer_addr, peer_port, peer_id in resp:
                 node = self.nodetree.get_node_by_id(peer_id)
                 if not node:
-                    node = Node(peer_id, peer_addr, peer_port)
+                    node = Node(peer_addr, peer_port, peer_id)
                     self.nodetree.add(node)
                     nodes.append(node)
         except ConnectionError:
@@ -224,16 +226,16 @@ class Network(object):
                      .format(random_id))
             self.find_nodes(random_id)
 
-    def handle_node_seen(self, peer_id, peer_addr, peer_port):
+    def handle_node_seen(self, peer_addr, peer_port, peer_id):
         """
         Callback when activity from a peer is seen.
-        @param peer_id: Id (long) of peer performing activity
         @param peer_addr: Endpoint IP address of peer
         @param peer_port: Endpoint Port number of peer
+        @param peer_id: Public key (z85 encoded) of peer
         """
         node = self.nodetree.get_node_by_id(peer_id)
         if not node:
-            node = Node(peer_id, peer_addr, peer_port)
+            node = Node(peer_addr, peer_port, peer_id)
             self.nodetree.add(node)
 
     def handle_find_nodes(self, peer_id, target):
@@ -246,7 +248,7 @@ class Network(object):
         """
         LOG.debug("Finding nodes for peer: {0} target: {1}" \
                   .format(peer_id, target))
-        return [ (x.node_id, x.address, x.port)
+        return [ (x.address, x.port, x.node_id)
                 for x in self.nodetree.closest_to(target) ]
 
     def _is_only_seed(self, seeds):
@@ -254,20 +256,20 @@ class Network(object):
         @return True if this node is the only known seed otherwise False.
         """
         return len(seeds) == 1 and (\
-            "{0}:{1}".format(self.node.address, self.node.port) == seeds[0] or
-            "{0}:{1}".format(self.node.hostname, self.node.port) == seeds[0] or
-            "{0}:{1}".format("127.0.0.1", self.node.port) == seeds[0] or
-            "{0}:{1}".format("localhost", self.node.port) == seeds[0])
+            "{0}:{1}:{2}".format(self.node.address, self.node.port, self.node.node_id) == seeds[0] or
+            "{0}:{1}:{2}".format(self.node.hostname, self.node.port, self.node.node_id) == seeds[0] or
+            "{0}:{1}:{2}".format("127.0.0.1", self.node.port, self.node.node_id) == seeds[0] or
+            "{0}:{1}:{2}".format("localhost", self.node.port, self.node.node_id) == seeds[0])
 
     def _bootstrap(self, seeds):
         """
         Given a list of seeds attempt to make a connection into the
         p2p network and discover neighbours.
-        @param seeds: List of "ip:port" peers to attempt ot bootstrap from
+        @param seeds: List of "address:port:key" peers to attempt ot bootstrap from
         """
         if not seeds:
             raise ValueError('Seeds list must not be empty and must contain '
-                             'endpoints in "address:port" format.')
+                             'endpoints in "address:port:key" format.')
         untried = list(seeds)
         self.nodetree.add(self.node)
         # don't bother connecting if only self
@@ -282,13 +284,12 @@ class Network(object):
     def _bootstrap_from_peer(self, endpoint):
         """
         Bootstrap from the given peer endpoint details.
-        @param endpoint: Endpoint string "id:port" of peer to attempt
+        @param endpoint: Endpoint string "address:port:key" of peer to attempt
         """
-        addr, port = endpoint.split(':')
+        addr, port, key = endpoint.split(':', 2)
         try:
             LOG.debug("Attempting to bootstrap from {0}".format(endpoint))
-            with Connection(self.node.node_id, self.node.address,
-                            self.node.port, Node(None, addr, port)) as conn:
+            with Connection(self.node, Node(addr, port, key)) as conn:
                 nodes, rtt = conn.find_nodes(self.node.node_id)
                 LOG.debug("Discovered {0} nodes from seed {1}".format(
                             len(nodes), endpoint))

@@ -1,5 +1,5 @@
 # Peerz - P2P python library using ZeroMQ sockets and gevent
-# Copyright (C) 2014 Steve Henderson
+# Copyright (C) 2014-2015 Steve Henderson
 #
 # This program is free software: you can redistribute it and/or modify
 # it under the terms of the GNU General Public License as published by
@@ -18,16 +18,17 @@ import gevent
 from peerz.core import Network
 from peerz.transport import ConnectionError
 
-SEED = 'localhost:7111'
-ROOT = '/tmp/helloworld'
-
 def main():
+    seed = 'localhost:7111'
+    root = '/tmp/helloworld'
     port = 7111
     node = None
     while not node:
         try:
-            net = Network(port, ROOT)
-            net.join([SEED])
+            net = Network(port, root)
+            if port == 7111:
+                seed += ":{0}".format(net.node.node_id)
+            net.join([seed])
             node = net.get_local()
         except ConnectionError:
             port += 1

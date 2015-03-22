@@ -1,5 +1,5 @@
 # Peerz - P2P python library using ZeroMQ sockets and gevent
-# Copyright (C) 2014 Steve Henderson
+# Copyright (C) 2014-2015 Steve Henderson
 #
 # This program is free software: you can redistribute it and/or modify
 # it under the terms of the GNU General Public License as published by
@@ -53,6 +53,8 @@ seeds = ['localhost:7001']
 def test_find_nodes(root, closeme):
     # seed
     net = Network(7001, root)
+    seeds[0] += ":{0}".format(net.node.node_id)
+    print seeds
     net.join(seeds)
     closeme.append(net)
     node = net.get_local()
@@ -70,7 +72,9 @@ def test_find_nodes(root, closeme):
 
     # some more random nodes
     for i in range(7004, 7024):
-        closeme.append(Network(i, root).join(seeds))
+        n = Network(i, root)
+        n.join(seeds)
+        closeme.append(n)
 
     # find a random id
     target = generate_random()

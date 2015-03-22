@@ -1,5 +1,5 @@
 # Peerz - P2P python library using ZeroMQ sockets and gevent
-# Copyright (C) 2014 Steve Henderson
+# Copyright (C) 2014-2015 Steve Henderson
 #
 # This program is free software: you can redistribute it and/or modify
 # it under the terms of the GNU General Public License as published by
@@ -19,6 +19,9 @@ from functools import update_wrapper, wraps
 import time
 
 import zmq.green as zmq
+from zmq.auth import CURVE_ALLOW_ANY
+from zmq.auth.thread import ThreadAuthenticator
+from zmq.utils import z85
 
 from version import __protocol__ as PROTOCOL_VERSION
 
@@ -30,7 +33,7 @@ def headers(node, msgtype):
     Generate the message headers for sending on the wire.
     Any message body elements can be appended to the returned
     object before sending.
-    @param node: Node details in 'id:addr:port' format.
+    @param node: Node details in 'addr:port:id' format.
     @param msgtype: String name of message type
     @return: List that can be sent as a multipart message.
     """
@@ -41,7 +44,7 @@ def splitmsg(msg):
     Given a multipart message, split out the application important
     fields and return them.
     @param msg: Multipart message list
-    @return: Tuple of peer_id, peer_addr, peer_port, msgtype, extra
+    @return: Tuple of peer_addr, peer_port, peer_id, msgtype, extra
     where extra is a list of msg body fields (or an empty list if none)
     @raise InvalidMessage: Any message parsing issues
     """
@@ -49,30 +52,30 @@ def splitmsg(msg):
         raise InvalidMessage("Insufficient message parts")
     protocol, version, peer, msgtype = msg[:4]
     extra = msg[4:]
-    peer_id, peer_addr, peer_port = unpack_node(peer)
+    peer_addr, peer_port, peer_id = unpack_node(peer)
 
     if protocol != PROTOCOL_NAME:
         raise InvalidMessage("Mismatch protocol name: {0} Expected: {1}" \
                              .format(protocol, PROTOCOL_NAME))
-    return peer_id, peer_addr, peer_port, msgtype, extra
+    return peer_addr, peer_port, peer_id, msgtype, extra
 
-def pack_node(node_id, addr, port):
+def pack_node(addr, port, node_id):
     """
     Given a tuple of basic node details, return in packed string format.
-    @param node_id: Id of node as a hex string
     @param addr: IP address of node
     @param port: Port number of node
+    @param id: Public key (z85 encoded) of node
     @return: String representation of node.
     """
-    return '{0}:{1}:{2}'.format(node_id, addr, port)
+    return '{0}:{1}:{2}'.format(addr, port, node_id)
 
 def unpack_node(node_str):
     """
     Given a string representation of a node, return a tuple of its details.
-    @param node_str: Node details in 'id:addr:port' format.
-    @return: Tuple of node_id, address, port
+    @param node_str: Node details in 'addr:port:id' format.
+    @return: Tuple of address, port, id
     """
-    x = node_str.split(':')
+    x = node_str.split(':', 2)
     return (x[0], x[1], x[2])
 
 def timer(f):
@@ -112,12 +115,10 @@ class ConnectionPool(object):
     """
     Simple LRU connection pool for client connections.
     """
-    def __init__(self, node_id, addr, port, ctx=None, maxsize=20):
+    def __init__(self, node, ctx=None, maxsize=20):
         """
         Initialise the pool with the supplied details.
-        @param node_id: Id of this node as hex string
-        @param addr: IP address of this node
-        @param port: Port number of this node
+        @param node: This node (the client)
         @param ctx: ZMQ context, will be auto created if None
         @param maxsize: Maximum number of open connections
         """
@@ -127,9 +128,7 @@ class ConnectionPool(object):
             self.ctx = zmq.Context()
         else:
             self.ctx = ctx
-        self.node_id = node_id
-        self.addr = addr
-        self.port = port
+        self.node = node
 
     def fetch(self, peer):
         """
@@ -141,7 +140,7 @@ class ConnectionPool(object):
         if peer.node_id in self.pool:
             conn = self.pool.pop(peer.node_id)
         else:
-            conn = Connection(self.node_id, self.addr, self.port, peer, self.ctx)
+            conn = Connection(self.node, peer, self.ctx)
         self.pool[peer.node_id] = conn
         if len(self.pool) > self.maxsize:
             _, old = self.pool.popitem(last=False)
@@ -159,17 +158,16 @@ class Connection(object):
         self.close()
 
     @zmqerror_adapter
-    def __init__(self, node_id, addr, port, peer, ctx=None):
+    def __init__(self, node, peer, ctx=None):
         """
         Create a new connection to the specified peer.
-        @param node_id: Node id (as string) of this node
-        @param addr: IP address of this node
-        @param port: Port number of this node
+        @param node: Node obj of this node
         @param peer: Peer (Node obj) to create connection to
         @param ctx: ZMQ context or autocreate if None
         """
-        self.node = pack_node(node_id, addr, port)
+        self.node = node
         self.peer = peer
+        self.node_header = pack_node(node.address, node.port, node.node_id)
         if not ctx:
             self.ctx = zmq.Context()
             self.ctx_managed = True
@@ -177,6 +175,9 @@ class Connection(object):
             self.ctx = ctx
             self.ctx_managed = False
         self.socket = Socket(self.ctx, zmq.REQ)
+        self.socket.curve_publickey = z85.decode(self.node.node_id)
+        self.socket.curve_secretkey = z85.decode(self.node.secret_key)
+        self.socket.curve_serverkey = z85.decode(self.peer.node_id)
         self.socket.connect("tcp://{0}:{1}".format(peer.address, peer.port))
 
     @timer
@@ -186,7 +187,7 @@ class Connection(object):
         Ping the peer.
         @return: Round trip time in ms
         """
-        msg = headers(self.node, 'PING')
+        msg = headers(self.node_header, 'PING')
         self.socket.send_multipart(msg)
         resp = self.socket.recv_multipart()
         splitmsg(resp)
@@ -196,15 +197,15 @@ class Connection(object):
     def find_nodes(self, target_id):
         """
         Request the peers list of closest nodes to the given target.
-        @param target_id: Node id (as long) to use for distance
-        @return: Tuple of list of nodes (id_str, addr, port) and 
+        @param target_id: Node id (z85 encoded) to use for distance
+        @return: Tuple of list of nodes (addr, port, id) and 
         round trip time in ms
         """
-        msg = headers(self.node, 'FNOD')
+        msg = headers(self.node_header, 'FNOD')
         msg.append(target_id)
         self.socket.send_multipart(msg)
         resp = self.socket.recv_multipart()
-        peer_id, peer_addr, peer_port, msgtype, extra = splitmsg(resp)
+        peer_addr, peer_port, peer_id, msgtype, extra = splitmsg(resp)
         nodes = [ unpack_node(x) for x in extra ]
         return nodes
 
@@ -221,19 +222,31 @@ class Server(object):
     """
     The server socket for the given node.
     """
+    # static auth instance as only want a singleton
+    # while there should only be a single Server per process
+    # this is not necessarily true in unit tests/examples, etc.
+    auth = None
     @zmqerror_adapter
-    def __init__(self, node_id, addr, port, listener):
+    def __init__(self, addr, port, node_id, listener, secret_key):
         """
         Creates a new server (bound but not dispatching messages)
-        @param node_id: Id of this node (as hex string)
         @param addr: IP address of this node
         @param port: Port number to listen on
+        @param node_id: Public key (z85 encoded) of this node
         @param listener: Callback object to receive handle_* function calls
         """
         self.ctx = zmq.Context()
         self.sock = Socket(self.ctx, zmq.REP)
+        # enable curve encryption/auth
+        if not Server.auth:
+            Server.auth = ThreadAuthenticator()
+            Server.auth.start()
+            Server.auth.configure_curve(domain='*', location=CURVE_ALLOW_ANY)
+        self.sock.curve_server = True
+        self.sock.curve_secretkey = z85.decode(secret_key)
+        self.sock.curve_publickey = z85.decode(node_id)
         self.sock.bind("tcp://*:{0}".format(port))
-        self.node = pack_node(node_id, addr, port)
+        self.node = pack_node(addr, port, node_id)
         self.shutdown = False
         self.listener = listener
 
@@ -247,14 +260,15 @@ class Server(object):
                 self._handle_msg(msg)
             except TimeoutError:
                 pass
+        self.sock.close()
         self.ctx.term()
 
     def _handle_msg(self, msg):
         resp = headers(self.node, 'FAIL')
         try:
-            peer_id, peer_addr, peer_port, msgtype, extra = splitmsg(msg)
+            peer_addr, peer_port, peer_id, msgtype, extra = splitmsg(msg)
             # notify of peer actvity
-            self.listener.handle_node_seen(peer_id, peer_addr, peer_port)
+            self.listener.handle_node_seen(peer_addr, peer_port, peer_id)
             if msgtype == 'PING':
                 resp = headers(self.node, 'PONG')
             elif msgtype == 'FNOD':
@@ -269,6 +283,11 @@ class Server(object):
             # can we drop a client conn with REQ/REP?
             resp.append(str(ex))
         self.sock.send_multipart(resp)
+
+    def close(self):
+        self.shutdown = True
+        if Server.auth:
+            Server.auth.stop()
 
 # http://lucumr.pocoo.org/2012/6/26/disconnects-are-good-for-you/
 class Socket(zmq.Socket):
