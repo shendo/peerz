@@ -18,17 +18,21 @@ import gevent
 from peerz.core import Network
 from peerz.transport import ConnectionError
 
+SEED = 'localhost:7111:+v5-KOQCyCiShO3H98!$rz&lUnh=As:lal-)}Gc-'
+SECRET = 'WP@84Uig:3U@qa^P[Q<MGoJj07ABmwgZRzOd}FfA'
+ROOT = '/tmp/helloworld'
+
 def main():
-    seed = 'localhost:7111'
-    root = '/tmp/helloworld'
     port = 7111
     node = None
     while not node:
         try:
-            net = Network(port, root)
+            net = Network(port, ROOT)
+            # pregenerated keys for example seed
             if port == 7111:
-                seed += ":{0}".format(net.node.node_id)
-            net.join([seed])
+                net.node.node_id = SEED.split(':', 2)[2]
+                net.node.secret_key = SECRET
+            net.join([SEED])
             node = net.get_local()
         except ConnectionError:
             port += 1
