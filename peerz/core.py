@@ -241,10 +241,9 @@ class Network(object):
     def handle_find_nodes(self, peer_id, target):
         """
         Callback for a find_nodes query from a peer.
-        @param peer_id: Id (long) of peer performing request
-        @param peer_addr: Endpoint IP address of peer
-        @param peer_port: Endpoint Port number of peer
-        @return: List of node tuples (id, addr, port) to return to peer.
+        @param peer_id: Id (z85 encoded) of peer performing request
+        @param target: Key (z85 encoded) of target to locate
+        @return: List of node tuples (addr, port, id) to return to peer.
         """
         LOG.debug("Finding nodes for peer: {0} target: {1}" \
                   .format(peer_id, target))
@@ -255,17 +254,15 @@ class Network(object):
         """
         @return True if this node is the only known seed otherwise False.
         """
-        return len(seeds) == 1 and (\
-            "{0}:{1}:{2}".format(self.node.address, self.node.port, self.node.node_id) == seeds[0] or
-            "{0}:{1}:{2}".format(self.node.hostname, self.node.port, self.node.node_id) == seeds[0] or
-            "{0}:{1}:{2}".format("127.0.0.1", self.node.port, self.node.node_id) == seeds[0] or
-            "{0}:{1}:{2}".format("localhost", self.node.port, self.node.node_id) == seeds[0])
+        # don't care about endpoint (could be external), just compare key
+        return len(seeds) == 1 and \
+            seeds[0].split(':', 2)[2] == self.node.node_id
 
     def _bootstrap(self, seeds):
         """
         Given a list of seeds attempt to make a connection into the
         p2p network and discover neighbours.
-        @param seeds: List of "address:port:key" peers to attempt ot bootstrap from
+        @param seeds: List of "address:port:key" peers to attempt to bootstrap
         """
         if not seeds:
             raise ValueError('Seeds list must not be empty and must contain '
