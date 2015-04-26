@@ -276,7 +276,7 @@ class Network(object):
                     gevent.sleep(5)
                     untried = list(seeds)
                 self._bootstrap_from_peer(untried.pop())
-        self.find_nodes(self.node.node_id)
+            self.find_nodes(self.node.node_id)
 
     def _bootstrap_from_peer(self, endpoint):
         """

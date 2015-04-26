@@ -16,6 +16,7 @@
 
 from collections import OrderedDict
 from functools import update_wrapper, wraps
+import logging
 import time
 
 import zmq.green as zmq
@@ -27,37 +28,7 @@ from version import __protocol__ as PROTOCOL_VERSION
 
 PROTOCOL_NAME = 'PEERZ'
 DEFAULT_TIMEOUT = 10
-
-def headers(node, msgtype):
-    """
-    Generate the message headers for sending on the wire.
-    Any message body elements can be appended to the returned
-    object before sending.
-    @param node: Node details in 'addr:port:id' format.
-    @param msgtype: String name of message type
-    @return: List that can be sent as a multipart message.
-    """
-    return [PROTOCOL_NAME, PROTOCOL_VERSION, node, msgtype]
-
-def splitmsg(msg):
-    """
-    Given a multipart message, split out the application important
-    fields and return them.
-    @param msg: Multipart message list
-    @return: Tuple of peer_addr, peer_port, peer_id, msgtype, extra
-    where extra is a list of msg body fields (or an empty list if none)
-    @raise InvalidMessage: Any message parsing issues
-    """
-    if len(msg) < 4:
-        raise InvalidMessage("Insufficient message parts")
-    protocol, version, peer, msgtype = msg[:4]
-    extra = msg[4:]
-    peer_addr, peer_port, peer_id = unpack_node(peer)
-
-    if protocol != PROTOCOL_NAME:
-        raise InvalidMessage("Mismatch protocol name: {0} Expected: {1}" \
-                             .format(protocol, PROTOCOL_NAME))
-    return peer_addr, peer_port, peer_id, msgtype, extra
+LOGGER = logging.getLogger(__name__)
 
 def pack_node(addr, port, node_id):
     """
@@ -158,7 +129,7 @@ class Connection(object):
         self.close()
 
     @zmqerror_adapter
-    def __init__(self, node, peer, ctx=None):
+    def __init__(self, node, peer, ctx=None, secure=True):
         """
         Create a new connection to the specified peer.
         @param node: Node obj of this node
@@ -167,6 +138,8 @@ class Connection(object):
         """
         self.node = node
         self.peer = peer
+        # abbreviated peer id for logging/debugging
+        self.peer_label = peer.node_id[:6] + '..'
         self.node_header = pack_node(node.address, node.port, node.node_id)
         if not ctx:
             self.ctx = zmq.Context()
@@ -174,11 +147,45 @@ class Connection(object):
         else:
             self.ctx = ctx
             self.ctx_managed = False
-        self.socket = Socket(self.ctx, zmq.REQ)
-        self.socket.curve_publickey = z85.decode(self.node.node_id)
-        self.socket.curve_secretkey = z85.decode(self.node.secret_key)
-        self.socket.curve_serverkey = z85.decode(self.peer.node_id)
+
+        self.socket = Socket(self.ctx, zmq.DEALER)
+        self.socket.identity = node.node_id
+        if secure:
+            self.socket.curve_publickey = z85.decode(node.node_id)
+            self.socket.curve_secretkey = z85.decode(node.secret_key)
+            self.socket.curve_serverkey = z85.decode(peer.node_id)
         self.socket.connect("tcp://{0}:{1}".format(peer.address, peer.port))
+        LOGGER.info("C (%s) connected.", self.peer_label)
+
+    def headers(self, msgtype):
+        """
+        Generate the message headers for sending on the wire.
+        Any message body elements can be appended to the returned
+        object before sending.
+        @param msgtype: String name of message type
+        @return: List that can be sent as a multipart message.
+        """
+        return [PROTOCOL_NAME, PROTOCOL_VERSION, self.node_header, msgtype]
+    
+    def splitmsg(self, msg):
+        """
+        Given a multipart message, split out the application important
+        fields and return them.
+        @param msg: Multipart message list
+        @return: Tuple of peer_addr, peer_port, peer_id, msgtype, extra
+        where extra is a list of msg body fields (or an empty list if none)
+        @raise InvalidMessage: Any message parsing issues
+        """
+        if len(msg) < 4:
+            raise InvalidMessage("Insufficient message parts")
+        protocol, version, peer, msgtype = msg[:4]
+        extra = msg[4:]
+        
+        if protocol != PROTOCOL_NAME:
+            raise InvalidMessage("Mismatch protocol name: {0} Expected: {1}" \
+                                 .format(protocol, PROTOCOL_NAME))
+        peer_addr, peer_port, peer_id = unpack_node(peer)
+        return peer_addr, peer_port, peer_id, msgtype, extra
 
     @timer
     @zmqerror_adapter
@@ -187,10 +194,12 @@ class Connection(object):
         Ping the peer.
         @return: Round trip time in ms
         """
-        msg = headers(self.node_header, 'PING')
+        msg = self.headers('PING')
+        LOGGER.debug("C (%s) send: %s", self.peer_label, msg)
         self.socket.send_multipart(msg)
         resp = self.socket.recv_multipart()
-        splitmsg(resp)
+        LOGGER.debug("C (%s) recv: %s", self.peer_label, resp)
+        self.splitmsg(resp)
 
     @timer
     @zmqerror_adapter
@@ -201,11 +210,13 @@ class Connection(object):
         @return: Tuple of list of nodes (addr, port, id) and 
         round trip time in ms
         """
-        msg = headers(self.node_header, 'FNOD')
+        msg = self.headers('FNOD')
         msg.append(target_id)
+        LOGGER.debug("C (%s) send: %s", self.peer_label, msg)
         self.socket.send_multipart(msg)
         resp = self.socket.recv_multipart()
-        peer_addr, peer_port, peer_id, msgtype, extra = splitmsg(resp)
+        LOGGER.debug("C (%s) recv: %s", self.peer_label, resp)
+        peer_addr, peer_port, peer_id, msgtype, extra = self.splitmsg(resp)
         nodes = [ unpack_node(x) for x in extra ]
         return nodes
 
@@ -217,6 +228,7 @@ class Connection(object):
         self.socket.close()
         if self.ctx_managed:
             self.ctx.term()
+        LOGGER.info("C (%s) closed.", self.peer_label)
 
 class Server(object):
     """
@@ -227,7 +239,7 @@ class Server(object):
     # this is not necessarily true in unit tests/examples, etc.
     auth = None
     @zmqerror_adapter
-    def __init__(self, addr, port, node_id, listener, secret_key):
+    def __init__(self, addr, port, node_id, listener, secret_key, secure=True):
         """
         Creates a new server (bound but not dispatching messages)
         @param addr: IP address of this node
@@ -236,19 +248,57 @@ class Server(object):
         @param listener: Callback object to receive handle_* function calls
         """
         self.ctx = zmq.Context()
-        self.sock = Socket(self.ctx, zmq.REP)
-        # enable curve encryption/auth
-        if not Server.auth:
-            Server.auth = ThreadAuthenticator()
-            Server.auth.start()
-            Server.auth.configure_curve(domain='*', location=CURVE_ALLOW_ANY)
-        self.sock.curve_server = True
-        self.sock.curve_secretkey = z85.decode(secret_key)
-        self.sock.curve_publickey = z85.decode(node_id)
-        self.sock.bind("tcp://*:{0}".format(port))
         self.node = pack_node(addr, port, node_id)
         self.shutdown = False
         self.listener = listener
+
+        self.sock = Socket(self.ctx, zmq.ROUTER)
+        self.sock.identity = node_id
+        #self.sock.router_handover = 1 # allow peer reconnections with same id
+        # enable curve encryption/auth
+        if secure:
+            if not Server.auth:
+                Server.auth = ThreadAuthenticator()
+                Server.auth.start()
+                Server.auth.configure_curve(domain='*', 
+                                            location=CURVE_ALLOW_ANY)
+            self.sock.curve_server = True
+            self.sock.curve_secretkey = z85.decode(secret_key)
+            self.sock.curve_publickey = z85.decode(node_id)
+        self.sock.bind("tcp://*:{0}".format(port))
+        LOGGER.info("S listening.")
+
+    def headers(self, peer_id, msgtype):
+        """
+        Generate the message headers for sending on the wire.
+        Any message body elements can be appended to the returned
+        object before sending.
+        @param peer_id: Peer id/key in z85 format.
+        @param msgtype: String name of message type
+        @return: List that can be sent as a multipart message.
+        """
+        return [peer_id, PROTOCOL_NAME, PROTOCOL_VERSION, self.node, msgtype]
+
+    def splitmsg(self, msg):
+        """
+        Given a multipart message, split out the application important
+        fields and return them.
+        @param msg: Multipart message list
+        @return: Tuple of peer_addr, peer_port, peer_id, msgtype, extra
+        where extra is a list of msg body fields (or an empty list if none)
+        @raise InvalidMessage: Any message parsing issues
+        """
+        if len(msg) < 5:
+            raise InvalidMessage("Insufficient message parts")
+        client, protocol, version, peer, msgtype = msg[:5]
+        extra = msg[5:]
+        
+        if protocol != PROTOCOL_NAME:
+            raise InvalidMessage("Mismatch protocol name: {0} Expected: {1}" \
+                                 .format(protocol, PROTOCOL_NAME))
+        peer_addr, peer_port, peer_id = unpack_node(peer)
+        assert client == peer_id
+        return peer_addr, peer_port, peer_id, msgtype, extra
 
     def dispatch(self):
         """
@@ -257,6 +307,7 @@ class Server(object):
         while not self.shutdown:
             try:
                 msg = self.sock.recv_multipart()
+                LOGGER.debug("S (%s..) recv: %s", msg[0][:6], msg)
                 self._handle_msg(msg)
             except TimeoutError:
                 pass
@@ -264,30 +315,33 @@ class Server(object):
         self.ctx.term()
 
     def _handle_msg(self, msg):
-        resp = headers(self.node, 'FAIL')
+        resp = None
         try:
-            peer_addr, peer_port, peer_id, msgtype, extra = splitmsg(msg)
+            peer_addr, peer_port, peer_id, msgtype, extra = self.splitmsg(msg)
+            resp = self.headers(peer_id, 'FAIL')
             # notify of peer actvity
             self.listener.handle_node_seen(peer_addr, peer_port, peer_id)
             if msgtype == 'PING':
-                resp = headers(self.node, 'PONG')
+                resp = self.headers(peer_id, 'PONG')
             elif msgtype == 'FNOD':
                 target_id = extra[0]
                 nodes = self.listener.handle_find_nodes(peer_id, target_id)
-                resp = headers(self.node, 'FNOD')
+                resp = self.headers(peer_id, 'FNOD')
                 resp += [ pack_node(x[0], x[1], x[2]) for x in nodes ]
             else:
                 raise InvalidMessage('Unknown or unsupported message type: {0}' \
                                      .format(msgtype))
         except InvalidMessage, ex:
-            # can we drop a client conn with REQ/REP?
-            resp.append(str(ex))
-        self.sock.send_multipart(resp)
+            LOGGER.warn('S error: %s', str(ex))
+        if resp:
+            LOGGER.debug('S (%s..) send: %s', resp[0][:6], resp)
+            self.sock.send_multipart(resp)
 
     def close(self):
         self.shutdown = True
         if Server.auth:
             Server.auth.stop()
+        LOGGER.info("S closed.")
 
 # http://lucumr.pocoo.org/2012/6/26/disconnects-are-good-for-you/
 class Socket(zmq.Socket):
