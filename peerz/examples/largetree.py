@@ -31,9 +31,9 @@ def render_graph(dot):
         webbrowser.open_new_tab(tmp.name)
 
 if __name__ == '__main__':
-    node = Node('localhost', 65535, generate_random())
+    node = Node('a', 0, generate_random())
     nodetree = RoutingZone(node.node_id, bdepth=4, binsize=4)
     nodetree.add(node)
-    for x in xrange(1, 1000):
-        nodetree.add(Node('localhost', x, generate_random()))
+    for x in xrange(1, 2000):
+        nodetree.add(Node('b', x, generate_random()))
     render_graph(nodetree.visualise())

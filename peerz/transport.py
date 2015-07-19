@@ -17,6 +17,8 @@
 from collections import OrderedDict
 from functools import update_wrapper, wraps
 import logging
+import math
+import struct
 import time
 
 import zmq.green as zmq
@@ -24,11 +26,92 @@ from zmq.auth import CURVE_ALLOW_ANY
 from zmq.auth.thread import ThreadAuthenticator
 from zmq.utils import z85
 
-from version import __protocol__ as PROTOCOL_VERSION
+import version
 
 PROTOCOL_NAME = 'PEERZ'
 DEFAULT_TIMEOUT = 10
 LOGGER = logging.getLogger(__name__)
+
+OPTION_PLAIN = 0x01
+OPTION_CURVE = 0x02
+
+class InvalidPacket(Exception):
+    pass
+
+class Packet(object):
+
+    def pack(self, payload,
+             node_id,
+             mode=OPTION_PLAIN,
+             major=version.__protocol_major__,
+             minor=version.__protocol_minor__):
+        self.payload = payload
+        self.mode = mode
+        self.major = major
+        self.minor = minor
+        self.node_id = node_id
+        self.length = len(payload)
+
+    def unpack(self, msg):
+        if msg < 36:
+            raise InvalidPacket("Packet too small")
+#         prot, self.major, self.minor, self.node_id, self.mode, self.length = struct.unpack('!3sBB32sBI', msg[:42])
+#         self.payload = msg[42:]
+        self.node_id, self.mode = struct.unpack('!32sB', msg[:33])
+        self.payload = msg[33:]
+
+#         if prot != PROTOCOL_MAGIC:
+#             raise InvalidPacket("Expected protocol %s got %s" % (PROTOCOL_MAGIC, prot))
+#         if self.major > version.__protocol_major__ or \
+#            self.major < version.__protocol_major__:
+#             raise InvalidPacket("Incompatible protocol version. Expected major: %i got %i" %
+#                                 (version.__protocol_major__, self.major))
+#         if len(self.payload) != self.length:
+#             raise InvalidPacket("Header length %i does not match payload size %i" %
+#                                 (self.length, len(self.payload)))
+
+    @property
+    def msg(self):
+#         return struct.pack('!3sBB32sBI', PROTOCOL_MAGIC, self.major, self.minor, self.node_id, self.mode, self.length) + self.payload
+        return struct.pack('!32sB', self.node_id, self.mode) + self.payload
+
+class Payload(object):
+    MAX_FRAGMENT = 1100
+
+    def __init__(self):
+        self.fragments = []
+
+    def pack(self, txid, msgtype, content=b''):
+        self.lastfrag = math.floor(len(content) / Payload.MAX_FRAGMENT)
+        fragment = 0
+        while len(content) > Payload.MAX_FRAGMENT:
+            part = content[:Payload.MAX_FRAGMENT]
+            content = content[Payload.MAX_FRAGMENT:]
+            self.fragments.append(struct.pack('!4sBBBH', txid, msgtype, fragment, self.lastfrag, len(part)) + part)
+            fragment += 1
+        self.fragments.append(struct.pack('!4sBBBH', txid, msgtype, fragment, self.lastfrag, len(content)) + content)
+
+    def unpack(self, payload):
+        self.txid, self.msgtype, self.fragment, self.lastfrag, self.content_length = struct.unpack('!4sBBBH', payload[:9])
+        self.content = payload[9:self.content_length + 9]  # cater for padding
+
+class DefragMap(object):
+    def __init__(self):
+        self.map = {}
+
+    # TODO add expiry
+
+    def get_msg(self, txid, fragid, maxfrag, fragment):
+        # not fragmented
+        if fragid == maxfrag == 0:
+            return fragment
+        # list of all frags
+        frags = self.map.set_default(txid, [b''] * (maxfrag + 1))
+        frags[fragid] = fragment
+        if all(frags):
+            del self.map[txid]
+            return b''.join(frags)
+        return None
 
 def pack_node(addr, port, node_id):
     """
@@ -166,7 +249,7 @@ class Connection(object):
         @return: List that can be sent as a multipart message.
         """
         return [PROTOCOL_NAME, PROTOCOL_VERSION, self.node_header, msgtype]
-    
+
     def splitmsg(self, msg):
         """
         Given a multipart message, split out the application important
@@ -180,7 +263,7 @@ class Connection(object):
             raise InvalidMessage("Insufficient message parts")
         protocol, version, peer, msgtype = msg[:4]
         extra = msg[4:]
-        
+
         if protocol != PROTOCOL_NAME:
             raise InvalidMessage("Mismatch protocol name: {0} Expected: {1}" \
                                  .format(protocol, PROTOCOL_NAME))
@@ -254,13 +337,13 @@ class Server(object):
 
         self.sock = Socket(self.ctx, zmq.ROUTER)
         self.sock.identity = node_id
-        #self.sock.router_handover = 1 # allow peer reconnections with same id
+        # self.sock.router_handover = 1 # allow peer reconnections with same id
         # enable curve encryption/auth
         if secure:
             if not Server.auth:
                 Server.auth = ThreadAuthenticator()
                 Server.auth.start()
-                Server.auth.configure_curve(domain='*', 
+                Server.auth.configure_curve(domain='*',
                                             location=CURVE_ALLOW_ANY)
             self.sock.curve_server = True
             self.sock.curve_secretkey = z85.decode(secret_key)
@@ -292,7 +375,7 @@ class Server(object):
             raise InvalidMessage("Insufficient message parts")
         client, protocol, version, peer, msgtype = msg[:5]
         extra = msg[5:]
-        
+
         if protocol != PROTOCOL_NAME:
             raise InvalidMessage("Mismatch protocol name: {0} Expected: {1}" \
                                  .format(protocol, PROTOCOL_NAME))

@@ -39,7 +39,7 @@ if __name__ == '__main__':
     Simple tool to read the state files from running helloworld example
     and plot the routing tree for the chosen node using google charts.
     """
-    root = '/tmp/helloworld'
+    root = '/tmp/testing'
     port = 7111
     if len(sys.argv) > 2:
         port = int(sys.argv[2])

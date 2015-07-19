@@ -14,6 +14,14 @@
 # You should have received a copy of the GNU General Public License
 # along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
-__version__ = "0.1-dev"
-__protocol_major__ = 0
-__protocol_minor__ = 1
+import pkg_resources
+
+from peerz.context import core
+# Mapping of known context Id -> Context class
+registry = {
+    0x00: core.Global,
+}
+
+for context in pkg_resources.iter_entry_points(group='peerz.context'):
+    c = context.load()
+    registry[c.id] = c

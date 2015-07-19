@@ -13,31 +13,21 @@
 #
 # You should have received a copy of the GNU General Public License
 # along with this program.  If not, see <http://www.gnu.org/licenses/>.
-import gevent
+
+import time
 
 from peerz.core import Network
-from peerz.transport import ConnectionError
 
-SEED = 'localhost:7111:+v5-KOQCyCiShO3H98!$rz&lUnh=As:lal-)}Gc-'
-SECRET = 'WP@84Uig:3U@qa^P[Q<MGoJj07ABmwgZRzOd}FfA'
-ROOT = '/tmp/helloworld'
+SEED = 'localhost:7111:7%OJ6BCEW:}0MBW10DZWWB0.a<za!7F*U.31qpYX'
+SECRET = 'AL[w!D]I8jpmJ09ajSD7Vmw.$MA@Ld5VT!Sj$R!V'
 
 def main():
-    port = 7111
-    node = None
-    while not node:
-        try:
-            net = Network(port, ROOT)
-            # pregenerated keys for example seed
-            if port == 7111:
-                net.node.node_id = SEED.split(':', 2)[2]
-                net.node.secret_key = SECRET
-            net.join([SEED])
-            node = net.get_local()
-        except ConnectionError:
-            port += 1
-            print "Unable to bind to socket, trying next port: {0}".format(port)
-
+    net = Network([SEED])
+    node = net.get_local()
+    if node.port == 7111:
+        node = net.join(SECRET)
+    else:
+        node = net.join()
     try:
         while True:
             print node
@@ -46,7 +36,7 @@ def main():
 
             for x in net.get_peers():
                 print " - {0}".format(x.to_json())
-            gevent.sleep(10)
+            time.sleep(10)
     except KeyboardInterrupt:
         print 'Exiting...'
         net.leave()

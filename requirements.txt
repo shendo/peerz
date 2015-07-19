@@ -1,2 +1,2 @@
 pyzmq >= 14.4
-gevent >= 1.0.1
+transitions >= 0.2

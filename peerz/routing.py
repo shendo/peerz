@@ -19,8 +19,8 @@ from collections import OrderedDict
 from datetime import datetime, timedelta
 import hashlib
 import logging
+import os
 import socket
-import uuid
 
 from zmq.utils import z85
 
@@ -53,7 +53,7 @@ def generate_random():
     Large key sizes should minimises chances of collision.
     @return: New randomly generated id
     """
-    return id_for_key(str(uuid.uuid4()))
+    return os.urandom(KEY_BITS / 8)
 
 def distance(node_id1, node_id2):
     """
@@ -62,8 +62,11 @@ def distance(node_id1, node_id2):
     @param node_id2: Node id/key 2 as hex
     @return: The distance as long
     """
-    return long(binascii.hexlify(z85.decode(node_id1)), 16) ^ \
-        long(binascii.hexlify(z85.decode(node_id2)), 16)
+    return long(binascii.hexlify(node_id1), 16) ^ \
+        long(binascii.hexlify(node_id2), 16)
+
+def sort(list, target_id, key=lambda x: x):
+    list.sort(key=lambda x: distance(key(x), target_id))
 
 def bit_number(node_id, bit):
     """
@@ -77,7 +80,7 @@ def bit_number(node_id, bit):
     """
     if bit >= KEY_BITS:
         return 0
-    return (long(binascii.hexlify(z85.decode(node_id)), 16) \
+    return (long(binascii.hexlify(node_id), 16) \
         >> (KEY_BITS - 1 - bit)) & 1
 
 def id_for_key(key):
@@ -88,7 +91,7 @@ def id_for_key(key):
     """
     hasher = hashlib.sha256()
     hasher.update(key)
-    return z85.encode(hasher.digest())
+    return hasher.digest()
 
 class Node(object):
     """
@@ -101,7 +104,7 @@ class Node(object):
         @param address: IP address as string
         @param port: Server port number as string or int
         @param node_id: Node id (z85 encoded public key)
-        @param secret_key: The secret key of the node, z85 encoded
+        @param secret_key: The secret key of the node
         """
         self.address = address
         self.port = int(port)
@@ -135,7 +138,7 @@ class Node(object):
         Output the current node details in json
         @return JSON style dictionary
         """
-        return {'node_id': self.node_id,
+        return {'node_id': z85.encode(self.node_id),
                 'address': self.address,
                 'port': self.port,
                 'hostname': self.hostname,
@@ -150,7 +153,7 @@ class Node(object):
         @return: Brief string representation of this node.
         """
         return '{0}:{1} - {2} ({3})'.format(self.address, self.port,
-                                            self.node_id,
+                                            z85.encode(self.node_id),
                                             self.hostname)
 
 
@@ -492,10 +495,10 @@ class RoutingZone(object):
         def format_node(node):
             if self.node_id == node.node_id:
                 return '{{** {0} **|{1}:{2}}}' \
-                    .format(binascii.hexlify(z85.decode(node.node_id)),
+                    .format(binascii.hexlify(node.node_id),
                             node.address, node.port)
             return '{{{0}|{1}:{2}}}' \
-                .format(binascii.hexlify(z85.decode(node.node_id)),
+                .format(binascii.hexlify(node.node_id),
                         node.address, node.port)
         nodes = ""
         if self.is_leaf():
