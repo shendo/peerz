@@ -21,7 +21,9 @@ import hashlib
 import logging
 import os
 import socket
+import time
 
+from transitions import Machine
 from zmq.utils import z85
 
 LOG = logging.Logger(__name__)
@@ -34,6 +36,8 @@ K = 8
 B = 5
 # bit length of node id/key values
 KEY_BITS = 256
+
+NODE_RTT_DATA_POINTS = 10
 
 def time_since_epoch(future=0):
     """
@@ -65,8 +69,8 @@ def distance(node_id1, node_id2):
     return long(binascii.hexlify(node_id1), 16) ^ \
         long(binascii.hexlify(node_id2), 16)
 
-def sort(list, target_id, key=lambda x: x):
-    list.sort(key=lambda x: distance(key(x), target_id))
+def distance_sort(lst, target_id, key=lambda x: x):
+    lst.sort(key=lambda x: distance(key(x), target_id))
 
 def bit_number(node_id, bit):
     """
@@ -98,55 +102,145 @@ class Node(object):
     Represents a node in the peer to peer network
     and its related details/statistics.
     """
+    
+    states = ['discovered', 'verified', 'failed']
+    transitions = [
+        {'trigger': 'response_in', 'source': ['discovered', 'verified'], 'dest': 'verified', 'before': '_update', 'after': '_response_in'},
+        {'trigger': 'timeout', 'source': ['discovered', 'verified'], 'dest': 'failed', 'before': '_update', 'conditions': ['has_failed'], 'after': '_failed'},
+        {'trigger': 'timeout', 'source': 'discovered', 'dest': 'discovered', 'before': '_update', 'after': '_timeout'},
+        {'trigger': 'timeout', 'source': 'verified', 'dest': 'verified', 'before': '_update', 'after': '_timeout'},
+        {'trigger': 'timeout', 'source': 'failed', 'dest': 'failed', 'before': '_update'},
+    ]
+    
     def __init__(self, address, port, node_id, secret_key=None):
         """
         Create a new node.
         @param address: IP address as string
         @param port: Server port number as string or int
-        @param node_id: Node id (z85 encoded public key)
+        @param node_id: Node id as binary
         @param secret_key: The secret key of the node
         """
         self.address = address
         self.port = int(port)
         self.node_id = node_id
         self.secret_key = secret_key
-        self.hostname = socket.getfqdn(address)
-        self.first_contact = None
-        self.last_contact = None
-        self.latency_ms = 0
-        self.failures = 0
+        self.discovered = time_since_epoch()
+        self.first_contact = self.last_contact = self.last_failure = None
+        self.reset()
 
-    def update(self, latency_ms):
-        """
-        Update this node due to recent activity.
-        @param latency_ms: Node message latency in milliseconds.
-        """
-        if self.latency_ms:
-            # smooth by averaging over previous values
-            self.latency_ms = (self.latency_ms + latency_ms) / 2
-        else:
-            self.latency_ms = latency_ms
+    def __getstate__(self):
+        # ignore state machine in pickling
+        state = self.__dict__.copy()
+        del state['machine']
+        for x in Node.states:
+            del state['to_' + x]
+            del state['is_' + x]
+        for x in Node.transitions:
+            state.pop(x['trigger'], None)
+        return state
+    
+    def __setstate__(self, state):
+        # reset state machine after unpickling
+        self.__dict__.update(state)
+        self.reset()
 
+    @property
+    def hostname(self):
+        return socket.getfqdn(self.address)
+    
+    @property
+    def latency(self):
+        if self.rtt:
+            return sum(self.rtt) / len(self.rtt)
+        return 0.0
+
+    @property
+    def msg_loss(self):
+        if self.queries_out:
+            return 1.0-(float(self.responses_in) / self.queries_out)
+        
+    def _update(self):
+        now = time.time() * 1000
+        self.times.setdefault(self.state, 0.0)
+        self.times[self.state] += (now - self.last_change)
+        self.last_change = now
+
+    def query_in(self):
+        if not self.first_contact:
+            self.first_contact = time_since_epoch()
+
+        self.last_contact = time_since_epoch()
+        self.queries_in += 1
+        
+    def _response_in(self):
         if not self.first_contact:
             self.first_contact = time_since_epoch()
 
         self.last_contact = time_since_epoch()
         self.failures = 0
+        self.responses_in += 1
+    
+    def add_rtt(self, rtt):
+        if rtt:
+            # only keep x last measurments
+            self.rtt.insert(0, rtt)
+            self.rtt = self.rtt[:NODE_RTT_DATA_POINTS]
 
-    def to_json(self):
+    def query_out(self):
+        self.queries_out += 1
+        
+    def response_out(self):
+        self.failures = 0
+        self.responses_out += 1
+        
+    def _timeout(self):
+        self.failures += 1
+
+    def _failed(self):
+        self.last_failure = time_since_epoch()
+                
+    def has_failed(self):
+        return self.failures >= 3
+    
+    def reset(self):
+        self.machine = Machine(model=self,
+                       states=Node.states,
+                       transitions=Node.transitions,
+                       initial='discovered')
+        self.failures = 0
+        self.queries_in = 0
+        self.responses_in = 0
+        self.queries_out = 0
+        self.responses_out = 0
+        self.start = self.last_change = time.time() * 1000
+        self.times = {} # spent in state x
+        self.rtt = [] # list of recent round trip times
+
+    def to_json(self, redact=True):
         """
         Output the current node details in json
         @return JSON style dictionary
         """
-        return {'node_id': z85.encode(self.node_id),
+        data = {'node_id': z85.encode(self.node_id),
                 'address': self.address,
                 'port': self.port,
                 'hostname': self.hostname,
+                'discovered': self.discovered,
                 'first_contact': self.first_contact,
                 'last_contact': self.last_contact,
-                'latency_ms': self.latency_ms,
-                'failures': self.failures
+                'last_failure': self.last_failure,
+                'latency_ms': self.latency,
+                'msg_loss': self.msg_loss, 
+                'failures': self.failures,
+                'queries_in': self.queries_in,
+                'queries_out': self.queries_out,
+                'responses_in': self.responses_in,
+                'responses_out': self.responses_out,
+                'status': self.state,
                 }
+        if not redact and self.secret_key:
+            data.update['secret_key'] = z85.encode(self.secret_key)
+        return data
 
     def __str__(self):
         """

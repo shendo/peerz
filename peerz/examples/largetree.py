@@ -34,6 +34,6 @@ if __name__ == '__main__':
     node = Node('a', 0, generate_random())
     nodetree = RoutingZone(node.node_id, bdepth=4, binsize=4)
     nodetree.add(node)
-    for x in xrange(1, 2000):
+    for x in xrange(1, 500):
         nodetree.add(Node('b', x, generate_random()))
     render_graph(nodetree.visualise())

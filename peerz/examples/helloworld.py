@@ -16,26 +16,36 @@
 
 import time
 
-from peerz.core import Network
+from peerz import Network
 
-SEED = 'localhost:7111:7%OJ6BCEW:}0MBW10DZWWB0.a<za!7F*U.31qpYX'
+SEED = '127.0.0.1:7111:7%OJ6BCEW:}0MBW10DZWWB0.a<za!7F*U.31qpYX'
+NODE_ID = '7%OJ6BCEW:}0MBW10DZWWB0.a<za!7F*U.31qpYX'
 SECRET = 'AL[w!D]I8jpmJ09ajSD7Vmw.$MA@Ld5VT!Sj$R!V'
 
 def main():
     net = Network([SEED])
     node = net.get_local()
     if node.port == 7111:
-        node = net.join(SECRET)
+        net.join(NODE_ID, SECRET)
     else:
-        node = net.join()
+        net.join()
     try:
         while True:
-            print node
-            if not net.get_peers():
+            node = net.get_local()
+            peers = net.get_peers()
+            print "%s:%s:%s (%s)" % (node['address'],
+                                     node['port'],
+                                     node['node_id'],
+                                     node['hostname'])
+            if not peers:
                 print " - No peers"
-
-            for x in net.get_peers():
-                print " - {0}".format(x.to_json())
+            for x in peers:
+                print " - %s:%s:%s (%s) %s" % (x.pop('address'),
+                                               x.pop('port'),
+                                               x.pop('node_id'),
+                                               x.pop('hostname'),
+                                               str(x))
+            print ""
             time.sleep(10)
     except KeyboardInterrupt:
         print 'Exiting...'

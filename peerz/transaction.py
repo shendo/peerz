@@ -29,9 +29,9 @@ class TxMap(object):
     def has(self, txid):
         return txid in self.transactions
 
-    def create(self, clazz, msg, engine):
+    def create(self, clazz, msg, engine, *args, **kwargs):
         txid = self.next_txid()
-        self.transactions[txid] = clazz(engine, txid, msg)
+        self.transactions[txid] = clazz(engine, txid, msg, *args, **kwargs)
         return txid
 
     def get(self, txid):
@@ -39,7 +39,7 @@ class TxMap(object):
 
     def timeout(self, age):
         for tx in self.transactions.values():
-            if tx.duration() > age:
+            if not tx.is_complete() and tx.duration() > age:
                 tx.timeout()
 
     def expire(self, age):

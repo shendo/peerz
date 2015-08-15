@@ -14,13 +14,12 @@
 # You should have received a copy of the GNU General Public License
 # along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
+import json
 import logging
 
 import zmq
-from zmq.utils import z85
 
 from peerz import engine, utils
-from peerz.routing import Node
 
 LOG = logging.Logger(__name__)
 
@@ -44,25 +43,25 @@ class Network(object):
         @return: the node object that represents the current/local node.
         """
         self.engine.send_unicode("NODE")
-        return self.unpack_node(*self.engine.recv_multipart())
+        return json.loads(self.engine.recv())
 
     def get_peers(self):
         """
         @return: List of all known active peer nodes.
         """
         self.engine.send_unicode("PEERS")
-        i = iter(self.engine.recv_multipart())
-        return [ self.unpack_node(*x) for x in zip(i, i, i)]
+        return json.loads(self.engine.recv())
 
-    def reset(self, secret_key=''):
+    def reset(self, node_id='', secret_key=''):
         """
         Remove any existing state and reset as a new node.
         """
         self.engine.send_unicode("RESET", zmq.SNDMORE)
+        self.engine.send_unicode(node_id, zmq.SNDMORE)
         self.engine.send_unicode(secret_key)
-        return self.unpack_node(*self.engine.recv_multipart())
+        return json.loads(self.engine.recv())
 
-    def join(self, secret_key=''):
+    def join(self, node_id='', secret_key=''):
         """
         Attempt to connect this node into the network and initiate node 
         discovery/maintenance.
@@ -70,8 +69,9 @@ class Network(object):
         @raise ConnectionError: Unable to bind to server socket.
         """
         self.engine.send_unicode("START", zmq.SNDMORE)
+        self.engine.send_unicode(node_id, zmq.SNDMORE)
         self.engine.send_unicode(secret_key)
-        return self.unpack_node(*self.engine.recv_multipart())
+        return json.loads(self.engine.recv())
 
     def leave(self):
         """
@@ -125,9 +125,6 @@ class Network(object):
         """
         pass
 
-    def unpack_node(self, address, port, node_id):
-        return Node(address, int(port), z85.decode(node_id))
-
     def find_nodes(self, target_id, max_nodes=1):
         """
         Recursively find the nodes closest to the specified target_id.
@@ -137,5 +134,4 @@ class Network(object):
         """
         self.engine.send_unicode("FNOD", zmq.SNDMORE)
         self.engine.send_unicode(target_id)
-        i = iter(self.engine.recv_multipart())
-        return [ unpack_node(*x) for x in zip(i, i, i)]
+        return json.loads(self.engine.recv())

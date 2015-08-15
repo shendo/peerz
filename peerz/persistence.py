@@ -19,8 +19,7 @@ import os
 try:
     import cPickle
     serialiser = cPickle
-except:
-    cPickle = None
+except ImportError:
     import pickle as serialiser
 
 class LocalStorage(object):

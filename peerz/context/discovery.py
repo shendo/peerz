@@ -14,30 +14,25 @@
 # You should have received a copy of the GNU General Public License
 # along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
-# TODO: these packge/module names suck
-
+import random
 import time
 
-from transitions import Machine, MachineError
-import zmq
+from transitions import Machine
 from zmq.utils import z85
 
-from peerz.routing import sort, Node
+from peerz.routing import distance_sort, generate_random
 
 class FindNodes(object):
-    states = ['initialised', 'querying', 'waiting response', 'found', 'exhausted', 'timedout']
+    states = ['initialised', 'querying', 'waiting response', 'exhausted', 'timedout']
     transitions = [
-        # {'trigger': 'start', 'source': 'initialised', 'dest': 'complete', 'before': '_update', 'after': '_completed', 'conditions': ['is_found']},
         {'trigger': 'query', 'source': 'initialised', 'dest': 'querying', 'before': '_update', 'after': '_send_query'},
-        {'trigger': 'query', 'source': 'querying', 'dest': 'querying', 'before': '_update', 'after': '_send_query', 'conditions': ['has_capacity', 'has_unqueried']},
         {'trigger': 'query', 'source': 'querying', 'dest': 'waiting response', 'before': '_update', 'conditions': ['has_outstanding']},
-        # {'trigger': 'response', 'source': 'waiting response', 'dest': 'found', 'before': '_update', 'after': '_completed', 'conditions': ['is_found']},
         {'trigger': 'response', 'source': ['querying', 'waiting response'], 'dest': 'exhausted', 'before': '_update', 'after': '_completed', 'conditions': ['unqueried_is_empty', 'outstanding_is_empty']},
         {'trigger': 'response', 'source': ['querying', 'waiting response'], 'dest': 'querying', 'before': '_update', 'after': '_send_query', 'conditions': ['has_capacity']},
         {'trigger': 'timeout', 'source': '*', 'dest': 'timedout', 'before': '_update', 'after': '_completed', },
     ]
 
-    def __init__(self, engine, txid, msg, max_concurrent=3):
+    def __init__(self, engine, txid, msg, silent=False, max_concurrent=3):
         self.engine = engine
         self.machine = Machine(model=self,
                                states=FindNodes.states,
@@ -46,19 +41,20 @@ class FindNodes(object):
 
         self.start = self.last_change = time.time() * 1000
         self.txid = txid
+        self.silent = silent
         self.times = {}
         self.max_concurrent = max_concurrent
         self.target = z85.decode(msg.pop(0))
+        # include peers that may be in bad states in case they have come good? will eventually be evicted
         self.closest = self.engine.nodetree.closest_to(self.target)
         self.unqueried = list(self.closest)  # shallow is fine
         self.queried = []
-        # TODO indiv msg timeouts and peer removal
-        self.outstanding = []
+        self.outstanding = {} # peer_id -> query time
         self.query()
 
-#     def is_found(self):
-#         return self.target in self.closest
-
+    def is_complete(self):
+        return self.state in ['exhausted', 'timedout']
+    
     def has_capacity(self):
         return len(self.outstanding) < self.max_concurrent
 
@@ -97,16 +93,19 @@ class FindNodes(object):
     def handle_response(self, peer, txid, msgtype, content):
         if msgtype == 0x04:
             for x in self._unpack_response(content):
-                n = Node(*x)
+                n = self.engine.verify_peer(*x)
                 self.engine.nodetree.add(n)
                 # only add new nodes
                 if not n.node_id in self.queried and not n.node_id in [ u.node_id for u in self.unqueried ]:
                     self.closest.append(n)
-            sort(self.closest, self.target, key=lambda x: x.node_id)
+            distance_sort(self.closest, self.target, key=lambda x: x.node_id)
             self.closest = self.closest[:8]
             self.unqueried = [ x for x in self.closest if x.node_id not in self.queried ]
-            self.outstanding.remove(peer.node_id)
-            self.response()
+            # duplicate? first wins
+            ts = self.outstanding.pop(peer.node_id, None)
+            if ts:
+                peer.add_rtt(time.time() * 1000 - ts)
+                self.response()
 
     def _update(self):
         now = time.time() * 1000
@@ -118,33 +117,38 @@ class FindNodes(object):
         return time.time() * 1000 - self.start
 
     def _send_query(self):
-        peer = self.unqueried.pop(0)
-        self.engine.send_external(peer, self.txid, 0x03, self._pack_request())
-        self.outstanding.append(peer.node_id)
-        self.queried.append(peer.node_id)
-        self.query()
+        while self.has_capacity() and self.unqueried:
+            peer = self.unqueried.pop(0)
+            self.engine.send_external(peer, self.txid, 0x03, self._pack_request())
+            self.outstanding[peer.node_id] = time.time() * 1000
+            self.queried.append(peer.node_id)
 
     def _completed(self):
-        for i, x in enumerate(self.closest, start=1):
-            self.engine.send_api(x.address, zmq.SNDMORE)
-            self.engine.send_api(str(x.port), zmq.SNDMORE)
-            self.engine.send_api(z85.encode(x.node_id), i < len(self.closest) and zmq.SNDMORE or 0)
+        for node_id, start in self.outstanding.items():
+            # check duration?
+            node = self.engine.nodetree.get_node_by_id(node_id)
+            if node:
+                node.timeout()
+
+        if self.silent:
+            return
+        self.engine.send_api([ x.to_json() for x in self.closest() ])
 
 class Ping(object):
     states = ['initialised', 'waiting response', 'complete', 'timedout']
     transitions = [
         {'trigger': 'ping', 'source': 'initialised', 'dest': 'waiting response', 'before': '_update', 'after': '_send_ping'},
         {'trigger': 'pong', 'source': 'waiting response', 'dest': 'complete', 'before': '_update', 'after': '_signal_pong'},
-        {'trigger': 'timeout', 'source': '*', 'dest': 'timedout', 'before': '_update'},
+        {'trigger': 'timeout', 'source': '*', 'dest': 'timedout', 'before': '_update', 'after': '_timeout'},
     ]
 
-    def __init__(self, engine, txid, msg):
+    def __init__(self, engine, txid, msg, silent=False):
         self.engine = engine
         self.machine = Machine(model=self,
                                states=Ping.states,
                                transitions=Ping.transitions,
                                initial='initialised')
-
+        self.silent = silent
         self.start = self.last_change = time.time() * 1000
         self.txid = txid
         self.times = {}
@@ -152,6 +156,9 @@ class Ping(object):
         if self.peer:
             self.ping()
 
+    def is_complete(self):
+        return self.state in ['complete', 'timedout']
+    
     def _unpack_request(self, msg):
         peer_addr = msg.pop(0)
         peer_port = int(msg.pop(0))
@@ -166,6 +173,7 @@ class Ping(object):
 
     def handle_response(self, peer, txid, msgtype, content):
         if msgtype == 0x02:
+            peer.add_rtt(self.latency())
             self.pong()
 
     def duration(self):
@@ -178,25 +186,40 @@ class Ping(object):
         self.engine.send_external(self.peer, self.txid, 0x01)
 
     def _signal_pong(self):
-        print 'latency: %0.02f ms' % self.latency()
-        self.engine.signal_api()
+        if not self.silent:
+            self.engine.signal_api()
+    
+    def _timeout(self):
+        if self.peer:
+            self.peer.timeout()
 
-class Global(object):
+class Discovery(object):
     id = 0x00
     mtype_table = {0x01: 'PING',
                    0x02: 'PONG',
                    0x03: 'FNOD',
-                   0x04: 'FNODresp',
-                   0x05: 'FVAL',
-                   0x06: 'FVALresp',
+                   0x04: 'RNOD',
     }
     state_table = {'PING': Ping,
                    'FNOD': FindNodes,
-                   'FVAL': None,
     }
 
-    def __init__(self, engine):
+    def __init__(self, engine, 
+                 neighbour_poll=120, 
+                 random_poll=300,
+                 verify_poll=61,
+                 verify_limit=3,
+                 reap_poll=62):
         self.engine = engine
+        self.neighbour_poll = neighbour_poll
+        self.random_poll = random_poll
+        self.verify_poll = verify_poll
+        self.verify_limit = verify_limit
+        self.reap_poll = reap_poll
+        self.next_random_poll = time.time() + random_poll
+        self.next_verify_poll = time.time() + verify_poll
+        self.next_reap_poll = time.time() + reap_poll
+        self.next_neighbour_poll = time.time() # poll immediately as part of bootstrap/init 
 
     def handle_peer(self, peer, txid, msgtype, content):
         if msgtype == 0x01:
@@ -204,8 +227,56 @@ class Global(object):
         elif msgtype == 0x03:
             assert len(content) == 32
             self.engine.send_external(peer, txid, 0x04,
-                FindNodes._pack_response(self.engine.nodetree.closest_to(content)))
+                # do not include nodes of questionable status
+                FindNodes._pack_response(
+                    [ x for x in self.engine.nodetree.closest_to(content) if not x.is_failed() ]))
 
+    def trigger_events(self):
+        now = time.time()
+        if self.next_neighbour_poll - now <= 0:
+            self.poll_neighbours()
+            self.next_neighbour_poll += self.neighbour_poll
+            
+        if self.next_random_poll - now <= 0:
+            self.poll_random()
+            self.next_random_poll += self.random_poll
+            
+        if self.next_verify_poll - now <= 0:
+            self.verify_peers()
+            self.next_verify_poll += self.verify_poll
+            
+        if self.next_reap_poll - now <= 0:
+            self.reap_peers()
+            self.next_reap_poll += self.reap_poll
+            
+    def poll_neighbours(self):
+        self.engine.txmap.create(FindNodes,
+                  [z85.encode(self.engine.node.node_id)], self.engine, silent=True)
+    
+    def poll_random(self):
+        # should really find a stale bucket not just random
+        self.engine.txmap.create(FindNodes,
+                  [z85.encode(generate_random())], self.engine, silent=True)
+    
+    # needed?
+    def verify_peers(self):
+        queried = 0
+        nodes = self.engine.nodetree.get_all_nodes()
+        random.shuffle(nodes)
+        for x in nodes:
+            if x.state == 'discovered':
+                self.engine.txmap.create(Ping,
+                  [x.address, x.port, z85.encode(x.node_id)], self.engine, silent=True)
+                queried += 1
+                if queried >= self.verify_limit:
+                    break
+    
+    def reap_peers(self):
+        for x in self.engine.nodetree.get_all_nodes():
+            if x.state == 'failed':
+                self.engine.nodetree.remove(x)
+    
     @staticmethod
     def has_command(command):
-        return command in Global.state_table.keys()
+        return command in Discovery.state_table.keys()
+    

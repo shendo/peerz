@@ -16,10 +16,11 @@
 
 import pkg_resources
 
-from peerz.context import core
+from peerz.context import discovery, hashtable
 # Mapping of known context Id -> Context class
 registry = {
-    0x00: core.Global,
+    discovery.Discovery.id: discovery.Discovery,
+    hashtable.DistributedHashtable.id: hashtable.DistributedHashtable,
 }
 
 for context in pkg_resources.iter_entry_points(group='peerz.context'):

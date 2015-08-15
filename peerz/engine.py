@@ -13,12 +13,17 @@
 #
 # You should have received a copy of the GNU General Public License
 # along with this program.  If not, see <http://www.gnu.org/licenses/>.
-
+import json
 import socket
 import time
 
-import nacl.utils
-from nacl.public import PrivateKey, PublicKey, Box
+try:
+    import nacl.utils
+    from nacl.public import PrivateKey, PublicKey, Box
+    HAS_NACL = True
+except ImportError:
+    HAS_NACL = False
+
 
 import zmq
 from zmq.utils import z85
@@ -32,9 +37,6 @@ from peerz import transport, context, transaction
 A = 3
 # number of comms fails to node before evicting from node tree
 MAX_NODE_FAILS = 2
-# automatic find_nodes request poll cycles in seconds
-NEIGHBOURHOOD_POLL = 120
-STALE_POLL = 600
 BASE_PORT = 7111
 
 class Engine(object):
@@ -56,6 +58,7 @@ class Engine(object):
         self.registry = dict([(id, val(self)) for id, val in context.registry.items()])
         self.defrag = transport.DefragMap()
         self.txmap = transaction.TxMap()
+        self.node = None
         # TODO need to think about this better.. what happens if bindaddr is invalid??
         # how do we flag error back to client if terminal?
         while True:
@@ -73,28 +76,35 @@ class Engine(object):
         # clean start
         if not self.node:
             self.reset()
-        self.secret_key = PrivateKey(self.node.secret_key)
-        self.secure = True
+        if HAS_NACL:
+            self.secret_key = PrivateKey(self.node.secret_key)
+            self.secure = True
+        else:
+            self.secure = False
 
         self.poller = zmq.Poller()
         self.poller.register(self.pipe, zmq.POLLIN)
         self.shutdown = False
         self.run()
 
-    def reset(self, secret_key=None):
+    def reset(self, public_key=None, secret_key=None):
         """
         Remove any existing state and reset as a new node.
         """
-        if not secret_key:
+        if not public_key:
             public_key, secret_key = zmq.curve_keypair()
             public_key = z85.decode(public_key)
             secret_key = z85.decode(secret_key)
         else:
             secret_key = z85.decode(secret_key)
-            public_key = str(PrivateKey(secret_key).public_key)
-
+            public_key = z85.decode(public_key)
+            if public_key and HAS_NACL:
+                computed_key = str(PrivateKey(secret_key).public_key)
+                assert (computed_key == public_key)
+            
         self.node = Node(self.addr, self.port, public_key, secret_key)
-        self.secret_key = PrivateKey(self.node.secret_key)
+        if HAS_NACL:
+            self.secret_key = PrivateKey(self.node.secret_key)
         self.nodetree = RoutingZone(self.node.node_id)
         # ensure we exist in own tree
         self.nodetree.add(self.node)
@@ -106,8 +116,9 @@ class Engine(object):
         # Signal actor successfully initialized
         self.signal_api()
 
+        next_timeout = time.time() + 1.0
         while not self.shutdown:
-            timeout = 5000
+            timeout = next_timeout - time.time()
             if timeout < 0:
                 timeout = 0
             items = dict(self.poller.poll(timeout * 1000))
@@ -117,12 +128,17 @@ class Engine(object):
             if self.udpserver.fileno() in items and items[self.udpserver.fileno()] == zmq.POLLIN:
                 self.recv_external()
             self._dump_state()
-            if time.time():  # TODO: add real time check
+            
+            if next_timeout <= time.time():
+                next_timeout += 1.0
                 self.txmap.timeout(5000)
+                self.txmap.expire(30000)
+                for x in self.registry.values():
+                    x.trigger_events()
 
-    def start(self, secret_key=None):
-        if secret_key:
-            self.reset(secret_key)
+    def start(self, node_id, secret_key=None):
+        if node_id:
+            self.reset(node_id, secret_key)
 # TODO: how to handle starting seeds?... is list optional?
 #         if not self.seeds:
 #             raise ValueError('Seeds list must not be empty and must contain '
@@ -131,13 +147,10 @@ class Engine(object):
         for endpoint in self.seeds:
             addr, port, id = endpoint.split(':', 2)
             self.nodetree.add(Node(addr, int(port), z85.decode(id)))
-        self.txmap.create(context.core.Global.state_table['FNOD'], [z85.encode(self.node.node_id)], self)
 
-    def send_api_node(self):
-        self.send_api(self.node.address, zmq.SNDMORE)
-        self.send_api(str(self.node.port), zmq.SNDMORE)
-        self.send_api(z85.encode(self.node.node_id))
-
+    def send_api_node(self, node, hasmore=False):
+        self.send_api(json.dumps(node.to_json()))
+        
     def stop(self):
         self.shutdown = True
 
@@ -145,23 +158,21 @@ class Engine(object):
         request = self.pipe.recv_multipart()
         command = request.pop(0).decode('UTF-8')
         if command == 'START':
-            self.start(request.pop(0).decode('UTF-8'))
-            self.send_api_node()
+            self.start(request.pop(0).decode('UTF-8'),
+                       request.pop(0).decode('UTF-8'))
+            self.send_api_node(self.node)
         elif command == 'STOP':
             self.stop()
         elif command == 'RESET':
-            self.reset(request.pop(0).decode('UTF-8'))
-            self.send_api_node()
+            self.reset(request.pop(0).decode('UTF-8'),
+                       request.pop(0).decode('UTF-8'))
+            self.send_api_node(self.node)
         elif command == 'NODE':
-            self.send_api_node()
+            self.send_api_node(self.node)
         elif command == 'PEERS':
-            filtered_nodes = [ x for x in self.nodetree.get_all_nodes() if x.node_id != self.node.node_id ]
-            if not filtered_nodes:
-                self.send_api('')
-            for i, peer in enumerate(filtered_nodes, start=1):
-                self.send_api(peer.address, zmq.SNDMORE)
-                self.send_api(str(peer.port), zmq.SNDMORE)
-                self.send_api(z85.encode(peer.node_id), i < len(filtered_nodes) and zmq.SNDMORE or 0)
+            filtered_nodes = [ x for x in self.nodetree.get_all_nodes()
+                              if x.node_id != self.node.node_id ]
+            self.send_api(json.dumps([ x.to_json() for x in filtered_nodes]))
         else:
             for x in context.registry.values():
                 if x.has_command(command):
@@ -187,11 +198,15 @@ class Engine(object):
     def verify_peer(self, addr, port, node_id):
         # IP filter/blacklisting...
         # public key whitelisting?
-        node = self.nodetree.get_node_by_addr(addr, port)
-        # same node but external address ahs changed
-        if node and node.node_id != node_id:
-            self.nodetree.remove(node)
-        elif node:  # exists already
+        
+        node = self.nodetree.get_node_by_id(node_id)
+        # same node?
+        if node and node.address == addr and node.port == port:
+            return node
+        # exists but external address has changed
+        elif node:
+            node.address = addr
+            node.port = port
             return node
         return Node(addr, port, node_id)
 
@@ -206,28 +221,37 @@ class Engine(object):
             data.unpack(p.payload)
             peer = self.verify_peer(addr[0], addr[1], p.node_id)
             msg = self.defrag.get_msg(data.txid, data.fragment, data.lastfrag, data.content)
-            # need context id?
+            # TODO need context id?
             if msg != None:
+                self.nodetree.add(peer)
                 # if is peer request...
                 if data.msgtype % 2 == 1:
+                    peer.query_in()
                     context.registry[0x00](self).handle_peer(peer, data.txid, data.msgtype, data.content)
-                    self.nodetree.add(peer)
                 else:
+                    peer.response_in()
                     tx = self.txmap.get(data.txid)
                     if tx:
                         tx.handle_response(peer, data.txid, data.msgtype, data.content)
-                    self.nodetree.add(peer)
+                    
         except Exception, ex:
+            print ex
+            #import traceback
+            #traceback.print_exc()
             print 'Warning: %s... ignoring' % str(ex)
 
     def send_external(self, node, txid, mtype, content=b''):
+        if mtype % 2 == 0:
+            node.response_out()
+        else:
+            node.query_out()
         payload = transport.Payload()
         payload.pack(txid, mtype, content)
         for x in payload.fragments:
             if self.secure:
-                payload = self.encrypt(node.node_id, x)
+                x = self.encrypt(node.node_id, x)
             p = transport.Packet()
-            p.pack(payload, self.node.node_id, self.secure and 0x02 or 0x01)
+            p.pack(x, self.node.node_id, self.secure and 0x02 or 0x01)
             self.udpserver.sendto(p.msg, (node.address, node.port))
 
 
@@ -235,13 +259,12 @@ class Engine(object):
         """
         Dump local state for persistence between runs.
         """
-        self.localstore.store('node', self.node)
-        # TODO is it better to rebuild new state or discard stale after restart?
         self.localstore.store('nodetree', self.nodetree)
 
     def _load_state(self):
         """
         Reload any persisted state.
         """
-        self.node = self.localstore.fetch('node')
         self.nodetree = self.localstore.fetch('nodetree')
+        if self.nodetree:
+            self.node = self.nodetree.get_node_by_id(self.nodetree.node_id)
