@@ -14,32 +14,31 @@
 # You should have received a copy of the GNU General Public License
 # along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
-import binascii
 
-from zmq.utils import z85
-
-from peerz.routing import distance, bit_number
+from peerz.routing import distance, distance_sort, bit_number
 from peerz.routing import RoutingBin, RoutingZone, Node
 
 def test_distance():
-    assert distance('1bAS#', '1bAS#') == 0
-    assert distance('42f10', '42f0f') == 0x4e
-    assert distance('1210f', '12110') == 0x01ca
-    assert distance('ss2b8f1111', 'ss1b8f1110') == 0x245900000001
-    assert distance('3000000001', '2b8f001111') == 0xFF48A4700097B7D
-    assert distance('12345:<ABC', '12348:<ABC') == 124554051584L
-    assert distance('123456789a', '0000a') == 229569846284491130L
-    assert distance(z85.encode(binascii.unhexlify('ffffffffffffffffffffffffffffffff')), '00000') == 0xffffffffffffffffffffffffffffffff
+    assert distance('10001', '10001') == 0
+    assert distance('\x42\xf1\x00', '\x42\xf0\xff') == 0x01ff
+    assert distance('\x42\xf0\xff', '\x42\xf1\x00') == 0x01ff
+    assert distance('\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff', '\x00\x00\x00') == 0xffffffffffffffffffffffffffffffff
 
 def test_bit_number():
-    assert bit_number('00000', 255) == 0
-    assert bit_number('00001', 255) == 1
-    assert bit_number(z85.encode(binascii.unhexlify('0ffffffffffffffffffffffff123456789abcdef0123456789abcdef01234567')), 0) == 0
-    assert bit_number(z85.encode(binascii.unhexlify('fffffffffffffffffffffffff123456789abcdeff123456789abcdef01234500')), 0) == 1
-    assert bit_number(z85.encode(binascii.unhexlify('fffffffffffffffffffffffff0000000000000000123456789ab000000000000')), 255) == 0
-    assert bit_number(z85.encode(binascii.unhexlify('0000000000000000000000000000000000000000000000000000000000000001')), 255) == 1
+    assert bit_number('\x00\x00\x00', 255) == 0
+    assert bit_number('\x00\x00\x01', 255) == 1
+    assert bit_number('\x0f\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xf1\x23\x45\x67\x89\xab\xcd\xef\x01\x23\x45\x67\x89\xab\xcd\xef\x01\x23\x45\x67', 0) == 0
+    assert bit_number('\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xf1\x23\x45\x67\x89\xab\xcd\xef\xf1\x23\x45\x67\x89\xab\xcd\xef\x01\x23\x45\x00', 0) == 1
+    assert bit_number('\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xf0\x00\x00\x00\x00\x00\x00\x00\x01\x23\x45\x67\x89\xab\x00\x00\x00\x00\x00\x00', 255) == 0
+    assert bit_number('\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x01', 255) == 1
 
-
+def test_distance_sort():
+    x = ['\x00\x02\x00\x00\x00', '\x00\x01\x00\x00\x00', '\x00\x04\x00\x00\x00', ]
+    distance_sort(x, '\x00\x00\x00\x00\x00')
+    assert x == ['\x00\x01\x00\x00\x00', '\x00\x02\x00\x00\x00', '\x00\x04\x00\x00\x00']
+    distance_sort(x, '\x00\x04\x00\x00\x00')
+    assert x == ['\x00\x04\x00\x00\x00', '\x00\x01\x00\x00\x00', '\x00\x02\x00\x00\x00']
+    
 class TestRoutingBin(object):
 
     def test_get_by_id(self):
@@ -134,19 +133,19 @@ class TestRoutingBin(object):
 
 class TestRoutingZone(object):
     def test_split_balanced(self):
-        own_node = Node('127.0.0.1', 7001, '%nSc0%nSc0%nSc0%nSc0%nSc0%nSc0%nSc0%nS90')
+        own_node = Node('127.0.0.1', 7001, '\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\x00')
         r = RoutingZone(own_node.node_id, binsize=10)
         r.add(own_node)
-        r.add(Node('100.2.3.4', 7003, '5c8Xf%nSc0%nSc0%nSc0%nSc0%nSc0%nSc0%nS93'))
-        r.add(Node('127.0.0.1', 7004, '%nSc0%nSc0%nSc0%nSc0%nSc0%nSc0%nSc0%nS94'))
-        r.add(Node('100.2.3.4', 7005, '5c8Xf%nSc0%nSc0%nSc0%nSc0%nSc0%nSc0%nS95'))
-        r.add(Node('127.0.0.1', 7006, '%nSc0%nSc0%nSc0%nSc0%nSc0%nSc0%nSc0%nS96'))
-        r.add(Node('100.2.3.4', 7007, '5c8Xf%nSc0%nSc0%nSc0%nSc0%nSc0%nSc0%nS97'))
-        r.add(Node('127.0.0.1', 7008, '%nSc0%nSc0%nSc0%nSc0%nSc0%nSc0%nSc0%nS98'))
-        r.add(Node('100.2.3.4', 7009, '5c8Xf%nSc0%nSc0%nSc0%nSc0%nSc0%nSc0%nS99'))
-        r.add(Node('127.0.0.1', 7010, '%nSc0%nSc0%nSc0%nSc0%nSc0%nSc0%nSc0%nS9a'))
-        r.add(Node('100.2.3.4', 7011, '5c8Xf%nSc0%nSc0%nSc0%nSc0%nSc0%nSc0%nS9b'))
-        r.add(Node('127.0.0.1', 7012, '%nSc0%nSc0%nSc0%nSc0%nSc0%nSc0%nSc0%nS9c'))
+        r.add(Node('100.2.3.4', 7003, '\x00\x00\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\x03'))
+        r.add(Node('127.0.0.1', 7004, '\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\x04'))
+        r.add(Node('100.2.3.4', 7005, '\x00\x00\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\x05'))
+        r.add(Node('127.0.0.1', 7006, '\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\x06'))
+        r.add(Node('100.2.3.4', 7007, '\x00\x00\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\x07'))
+        r.add(Node('127.0.0.1', 7008, '\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\x08'))
+        r.add(Node('100.2.3.4', 7009, '\x00\x00\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\x09'))
+        r.add(Node('127.0.0.1', 7010, '\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\x0a'))
+        r.add(Node('100.2.3.4', 7011, '\x00\x00\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\x0b'))
+        r.add(Node('127.0.0.1', 7012, '\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\x0c'))
         assert not r.is_leaf()
         assert r.max_depth() == 1
         assert len(r.children[0].get_all_nodes()) == 5
@@ -154,29 +153,29 @@ class TestRoutingZone(object):
         assert own_node in r.children[1].get_all_nodes()
 
     def test_split_unbalanced(self):
-        own_node = Node('127.0.0.1', 7001, '%nSc0%nSc0%nSc0%nSc0%nSc0%nSc0%nSc0%nS91')
+        own_node = Node('127.0.0.1', 7001, '\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\x01')
         r = RoutingZone(own_node.node_id, binsize=1, bdepth=1)
         r.add(own_node)
-        r.add(Node('127.0.0.1', 7003, '0000f%nSc0%nSc0%nSc0%nSc0%nSc0%nSc0%nS93'))
-        r.add(Node('127.0.0.1', 7000, '%nSc0%nSc0%nSc0%nSc0%nSc0%nSc0%nSc0%nS90'))
-        r.add(Node('127.0.0.1', 7005, '0000f%nSc0%nSc0%nSc0%nSc0%nSc0%nSc0%nS95'))
-        r.add(Node('127.0.0.1', 7007, '0000f%nSc0%nSc0%nSc0%nSc0%nSc0%nSc0%nS97'))
+        r.add(Node('127.0.0.1', 7003, '\x00\x00\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\x03'))
+        r.add(Node('127.0.0.1', 7000, '\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\x00'))
+        r.add(Node('127.0.0.1', 7005, '\x00\x00\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\x05'))
+        r.add(Node('127.0.0.1', 7007, '\x00\x00\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\x07'))
         assert not r.is_leaf()
         assert r.max_depth() == 256  # will split entire key length when 'ffff..00' added
         assert len(r.get_all_nodes()) == 3  # non matching will get discarded after first split
 
     def test_consolidate(self):
-        own_node = Node('127.0.0.1', 7001, '%nSc0%nSc0%nSc0%nSc0%nSc0%nSc0%nSc0%nS90')
+        own_node = Node('127.0.0.1', 7001, '\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\x01')
         r = RoutingZone(own_node.node_id, binsize=2, bdepth=1)
         r.add(own_node)
-        r.add(Node('127.0.0.1', 7003, '00000fffffffffffffffffffffffffffffffff03'))
-        r.add(Node('127.0.0.1', 7000, 'ffffffffffffffffffffffffffffffffffffff00'))
-        r.add(Node('127.0.0.1', 7005, '00000fffffffffffffffffffffffffffffffff05'))
-        r.add(Node('127.0.0.1', 7007, '00000fffffffffffffffffffffffffffffffff07'))
-        r.remove(Node('127.0.0.1', 7003, '00000fffffffffffffffffffffffffffffffff03'))
-        r.remove(Node('127.0.0.1', 7000, 'ffffffffffffffffffffffffffffffffffffff00'))
-        r.remove(Node('127.0.0.1', 7005, '00000fffffffffffffffffffffffffffffffff05'))
-        r.remove(Node('127.0.0.1', 7007, '00000fffffffffffffffffffffffffffffffff07'))
+        r.add(Node('127.0.0.1', 7003, '\x00\x00\x00\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\x03'))
+        r.add(Node('127.0.0.1', 7000, '\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\x00'))
+        r.add(Node('127.0.0.1', 7005, '\x00\x00\x00\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\x05'))
+        r.add(Node('127.0.0.1', 7007, '\x00\x00\x00\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\x07'))
+        r.remove(Node('127.0.0.1', 7003, '\x00\x00\x00\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\x03'))
+        r.remove(Node('127.0.0.1', 7000, '\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\x00'))
+        r.remove(Node('127.0.0.1', 7005, '\x00\x00\x00\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\x05'))
+        r.remove(Node('127.0.0.1', 7007, '\x00\x00\x00\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\x07'))
         assert r.is_leaf()
         assert r.max_depth() == 0
         assert len(r.get_all_nodes()) == 1
