@@ -15,6 +15,7 @@
 # along with this program.  If not, see <http://www.gnu.org/licenses/>.
 import json
 import socket
+import tempfile
 import time
 
 try:
@@ -30,7 +31,8 @@ from zmq.utils import z85
 
 from peerz.persistence import LocalStorage
 from peerz.routing import Node, RoutingZone
-from peerz import transport, context, transaction
+from peerz import transport, transaction
+from peerz import messaging
 
 # TODO config class
 # simultaneous requests
@@ -41,7 +43,7 @@ BASE_PORT = 7111
 
 class Engine(object):
 
-    def __init__(self, ctx, pipe, seeds=None, *args, **kwargs):
+    def __init__(self, ctx, pipe, seeds=None, storage=None, *args, **kwargs):
         self.ctx = ctx
         self.pipe = pipe
         if seeds:
@@ -50,12 +52,12 @@ class Engine(object):
             self.seeds = []
         # externally advertised
         self.port = BASE_PORT
-        self.addr = socket.gethostbyname(socket.gethostname())
+        self.addr = socket.gethostbyname(socket.gethostname()) # '10.1.1.115'
         # local may differ to external
         self.bindport = self.port
         self.bindaddr = ''
         self.udpserver = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-        self.registry = dict([(id, val(self)) for id, val in context.registry.items()])
+        self.registry = dict([(id, val(self)) for id, val in messaging.registry.items()])
         self.defrag = transport.DefragMap()
         self.txmap = transaction.TxMap()
         self.node = None
@@ -69,9 +71,11 @@ class Engine(object):
             except socket.error:
                 self.port += 1
                 self.bindport += 1
+        
         # persistence between runs
-        # TODO: external responsibility?
-        self.localstore = LocalStorage('/tmp/testing', self.port)
+        if not storage:
+            storage = tempfile.mkdtemp()
+        self.localstore = LocalStorage(storage, self.port)
         self._load_state()
         # clean start
         if not self.node:
@@ -103,6 +107,7 @@ class Engine(object):
                 assert (computed_key == public_key)
             
         self.node = Node(self.addr, self.port, public_key, secret_key)
+        self.hashtabe = {}
         if HAS_NACL:
             self.secret_key = PrivateKey(self.node.secret_key)
         self.nodetree = RoutingZone(self.node.node_id)
@@ -174,9 +179,9 @@ class Engine(object):
                               if x.node_id != self.node.node_id ]
             self.send_api(json.dumps([ x.to_json() for x in filtered_nodes]))
         else:
-            for x in context.registry.values():
+            for x in messaging.registry.values():
                 if x.has_command(command):
-                    self.txmap.create(x.state_table[command], request, self)
+                    self.txmap.create(x.state_table[command], request, self, callback=self.send_api)
                     return
             self.send_api('Invalid Command')  # placeholder, what should error handling look like from client
 
@@ -221,13 +226,15 @@ class Engine(object):
             data.unpack(p.payload)
             peer = self.verify_peer(addr[0], addr[1], p.node_id)
             msg = self.defrag.get_msg(data.txid, data.fragment, data.lastfrag, data.content)
-            # TODO need context id?
+            # TODO need messaging id?
             if msg != None:
                 self.nodetree.add(peer)
                 # if is peer request...
                 if data.msgtype % 2 == 1:
                     peer.query_in()
-                    context.registry[0x00](self).handle_peer(peer, data.txid, data.msgtype, data.content)
+                    for x in messaging.registry.values():
+                        if x.has_message(data.msgtype):
+                            x(self).handle_peer(peer, data.txid, data.msgtype, data.content)
                 else:
                     peer.response_in()
                     tx = self.txmap.get(data.txid)
@@ -260,6 +267,7 @@ class Engine(object):
         Dump local state for persistence between runs.
         """
         self.localstore.store('nodetree', self.nodetree)
+        self.localstore.store('hashtable', self.hashtable)
 
     def _load_state(self):
         """
@@ -268,3 +276,5 @@ class Engine(object):
         self.nodetree = self.localstore.fetch('nodetree')
         if self.nodetree:
             self.node = self.nodetree.get_node_by_id(self.nodetree.node_id)
+        self.hashtable = self.localstore.fetch('hashtable') or {}
+

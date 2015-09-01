@@ -18,15 +18,15 @@ import time
 
 from peerz import Network
 
-SEED = '127.0.0.1:7111:7%OJ6BCEW:}0MBW10DZWWB0.a<za!7F*U.31qpYX'
+SEED = 'localhost:7111:7%OJ6BCEW:}0MBW10DZWWB0.a<za!7F*U.31qpYX'
 NODE_ID = '7%OJ6BCEW:}0MBW10DZWWB0.a<za!7F*U.31qpYX'
 SECRET = 'AL[w!D]I8jpmJ09ajSD7Vmw.$MA@Ld5VT!Sj$R!V'
 
 def main():
-    net = Network([SEED])
+    net = Network([SEED], storage='/tmp/helloworld')
     node = net.get_local()
-    if node.port == 7111:
-        net.join(NODE_ID, SECRET)
+    if node['port'] == 7111:
+        node = net.join(NODE_ID, SECRET)
     else:
         net.join()
     try:
@@ -36,7 +36,7 @@ def main():
             print "%s:%s:%s (%s)" % (node['address'],
                                      node['port'],
                                      node['node_id'],
-                                     node['hostname'])
+                                     node['hostname']) 
             if not peers:
                 print " - No peers"
             for x in peers:

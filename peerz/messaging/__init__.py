@@ -16,13 +16,13 @@
 
 import pkg_resources
 
-from peerz.context import discovery, hashtable
-# Mapping of known context Id -> Context class
+from peerz.messaging import discovery, hashtable
+# Mapping of known context Id -> Messaging class
 registry = {
     discovery.Discovery.id: discovery.Discovery,
     hashtable.DistributedHashtable.id: hashtable.DistributedHashtable,
 }
 
-for context in pkg_resources.iter_entry_points(group='peerz.context'):
+for context in pkg_resources.iter_entry_points(group='peerz.messaging'):
     c = context.load()
     registry[c.id] = c

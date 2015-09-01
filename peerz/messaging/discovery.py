@@ -14,6 +14,7 @@
 # You should have received a copy of the GNU General Public License
 # along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
+import json
 import random
 import time
 
@@ -32,8 +33,9 @@ class FindNodes(object):
         {'trigger': 'timeout', 'source': '*', 'dest': 'timedout', 'before': '_update', 'after': '_completed', },
     ]
 
-    def __init__(self, engine, txid, msg, silent=False, max_concurrent=3):
+    def __init__(self, engine, txid, msg, callback=None, max_concurrent=3):
         self.engine = engine
+        self.callback = callback
         self.machine = Machine(model=self,
                                states=FindNodes.states,
                                transitions=FindNodes.transitions,
@@ -41,7 +43,6 @@ class FindNodes(object):
 
         self.start = self.last_change = time.time() * 1000
         self.txid = txid
-        self.silent = silent
         self.times = {}
         self.max_concurrent = max_concurrent
         self.target = z85.decode(msg.pop(0))
@@ -81,7 +82,8 @@ class FindNodes(object):
             resp += b'%s%s\0%i\0' % (x.node_id, x.address, x.port)
         return resp
 
-    def _unpack_response(self, content):
+    @staticmethod
+    def _unpack_response( content):
         while content:
             try:
                 id = content[:32]
@@ -101,11 +103,11 @@ class FindNodes(object):
             distance_sort(self.closest, self.target, key=lambda x: x.node_id)
             self.closest = self.closest[:8]
             self.unqueried = [ x for x in self.closest if x.node_id not in self.queried ]
-            # duplicate? first wins
-            ts = self.outstanding.pop(peer.node_id, None)
-            if ts:
-                peer.add_rtt(time.time() * 1000 - ts)
-                self.response()
+        # duplicate? first wins
+        ts = self.outstanding.pop(peer.node_id, None)
+        if ts:
+            peer.add_rtt(time.time() * 1000 - ts)
+            self.response()
 
     def _update(self):
         now = time.time() * 1000
@@ -130,9 +132,8 @@ class FindNodes(object):
             if node:
                 node.timeout()
 
-        if self.silent:
-            return
-        self.engine.send_api([ x.to_json() for x in self.closest() ])
+        if self.callback:
+            self.callback(json.dumps([ x.to_json() for x in self.closest ]))
 
 class Ping(object):
     states = ['initialised', 'waiting response', 'complete', 'timedout']
@@ -142,13 +143,13 @@ class Ping(object):
         {'trigger': 'timeout', 'source': '*', 'dest': 'timedout', 'before': '_update', 'after': '_timeout'},
     ]
 
-    def __init__(self, engine, txid, msg, silent=False):
+    def __init__(self, engine, txid, msg, callback=None):
         self.engine = engine
+        self.callback = callback
         self.machine = Machine(model=self,
                                states=Ping.states,
                                transitions=Ping.transitions,
                                initial='initialised')
-        self.silent = silent
         self.start = self.last_change = time.time() * 1000
         self.txid = txid
         self.times = {}
@@ -186,8 +187,8 @@ class Ping(object):
         self.engine.send_external(self.peer, self.txid, 0x01)
 
     def _signal_pong(self):
-        if not self.silent:
-            self.engine.signal_api()
+        if self.callback:
+            self.callback()
     
     def _timeout(self):
         if self.peer:
@@ -251,12 +252,12 @@ class Discovery(object):
             
     def poll_neighbours(self):
         self.engine.txmap.create(FindNodes,
-                  [z85.encode(self.engine.node.node_id)], self.engine, silent=True)
+                  [z85.encode(self.engine.node.node_id)], self.engine)
     
     def poll_random(self):
         # should really find a stale bucket not just random
         self.engine.txmap.create(FindNodes,
-                  [z85.encode(generate_random())], self.engine, silent=True)
+                  [z85.encode(generate_random())], self.engine)
     
     # needed?
     def verify_peers(self):
@@ -264,19 +265,22 @@ class Discovery(object):
         nodes = self.engine.nodetree.get_all_nodes()
         random.shuffle(nodes)
         for x in nodes:
-            if x.state == 'discovered':
+            if x.is_discovered():
                 self.engine.txmap.create(Ping,
-                  [x.address, x.port, z85.encode(x.node_id)], self.engine, silent=True)
+                  [x.address, x.port, z85.encode(x.node_id)], self.engine)
                 queried += 1
                 if queried >= self.verify_limit:
                     break
     
     def reap_peers(self):
         for x in self.engine.nodetree.get_all_nodes():
-            if x.state == 'failed':
+            if x.is_failed():
                 self.engine.nodetree.remove(x)
     
     @staticmethod
     def has_command(command):
         return command in Discovery.state_table.keys()
     
+    @staticmethod
+    def has_message(msgtype):
+        return msgtype in Discovery.mtype_table.keys()

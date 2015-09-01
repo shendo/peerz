@@ -39,6 +39,8 @@ class TxMap(object):
 
     def timeout(self, age):
         for tx in self.transactions.values():
+            if hasattr(tx, 'max_duration'):
+                age = tx.max_duration
             if not tx.is_complete() and tx.duration() > age:
                 tx.timeout()
 

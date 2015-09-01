@@ -17,9 +17,12 @@
 from functools import wraps
 import shutil
 import tempfile
+import time
 
-from peerz.core import Network
-from peerz.routing import generate_random
+from zmq.utils import z85
+
+from peerz.api import Network
+from peerz.routing import distance_sort, generate_random
 
 def tmproot(f):
     """
@@ -38,48 +41,79 @@ def tmproot(f):
         try:
             return f(root, closeme, *args, **kwargs)
         finally:
-            shutil.rmtree(root)
             for x in closeme:
                 try:
                     x.leave()
                 except:
                     pass
-
+            shutil.rmtree(root, ignore_errors=True)
     return wrapper
-
-seeds = ['localhost:7001']
 
 @tmproot
 def test_find_nodes(root, closeme):
     # seed
-    net = Network(7001, root)
-    seeds[0] += ":{0}".format(net.node.node_id)
-    print seeds
-    net.join(seeds)
-    closeme.append(net)
+    net = Network([], root)
+    net.join()
     node = net.get_local()
-
+    seeds = ["{0}:{1}:{2}".format(node['address'], node['port'], node['node_id'])]
+    closeme.append(net)
     # can find self
-    assert net.find_nodes(node.node_id) != None
+    assert net.find_nodes(node['node_id']) != None
 
     # check for consistency across nodes
-    net2 = Network(7002, root)
-    net2.join(seeds)
+    net2 = Network(seeds, root)
+    net2.join()
     closeme.append(net2)
-    net3 = Network(7003, root)
-    net3.join(seeds)
+    net3 = Network(seeds, root)
+    net3.join()
     closeme.append(net3)
 
     # some more random nodes
-    for i in range(7004, 7024):
-        n = Network(i, root)
-        n.join(seeds)
+    for _ in range(20):
+        n = Network(seeds, root)
+        n.join()
         closeme.append(n)
 
+    # give them a bit of time to register with the seed
+    time.sleep(2)
+
     # find a random id
-    target = generate_random()
+    target = z85.encode(generate_random())
+    
     # just pull out the id's for comparison
-    nodes = [ x.node_id for x in net.find_nodes(target, 5) ]
+    nodes = [ x['node_id'] for x in net2.find_nodes(target, 5) ]
     # same response from other nodes
-    assert nodes == [ x.node_id for x in net2.find_nodes(target, 5) ]
-    assert nodes == [ x.node_id for x in net3.find_nodes(target, 5) ]
+    assert nodes == [ x['node_id'] for x in net3.find_nodes(target, 5) ]
+    
+    # check that the routing agrees they're in distance order
+    # need to transform back to raw bytes
+    nodes = [ z85.decode(x) for x in nodes ]
+    nodes2 = list(nodes)
+    distance_sort(nodes2, z85.decode(target))
+    assert nodes == nodes2
+
+@tmproot
+def test_publish(root, closeme):
+    # seed
+    net = Network([], root)
+    net.join()
+    node = net.get_local()
+    seeds = ["{0}:{1}:{2}".format(node['address'], node['port'], node['node_id'])]
+    closeme.append(net)
+    
+    net.publish('foo', 'bar')
+    assert net.fetch('foo') == 'bar'
+    
+    # check for consistency across nodes
+    net2 = Network(seeds, root)
+    net2.join()
+    closeme.append(net2)
+    assert net2.fetch('foo') == 'bar'
+    
+    net3 = Network(seeds, root)
+    net3.join()
+    closeme.append(net3)
+    assert net3.fetch('foo') == 'bar'
+
+
+    

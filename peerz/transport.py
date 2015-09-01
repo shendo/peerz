@@ -21,7 +21,7 @@ import math
 import struct
 import time
 
-import zmq.green as zmq
+import zmq
 from zmq.auth import CURVE_ALLOW_ANY
 from zmq.auth.thread import ThreadAuthenticator
 from zmq.utils import z85

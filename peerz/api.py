@@ -29,14 +29,14 @@ class Network(object):
     a nodes connection into the p2p network.
     """
 
-    def __init__(self, seeds):
+    def __init__(self, seeds, storage):
         """
         Creates a new (not yet connected) network object.
         @param port: Listener/server port for this node.
         @param storage: Filesystem path to root of local storage.
         """
         ctx = zmq.Context()
-        self.engine = utils.Actor(ctx, engine.Engine, seeds)
+        self.engine = utils.Actor(ctx, engine.Engine, seeds, storage)
 
     def get_local(self):
         """
@@ -81,17 +81,19 @@ class Network(object):
         self.engine.send_unicode("STOP")
         self.engine.resolve().wait()
 
-    def publish(self, key, content, context='default', redundancy=1, ttl=0):
+    def publish(self, key, content, context='default'):
         """
         Publish the object content into the network.
         @param key: Identifier to lookup the object
         @param content: Object to be published.
         @param context: String label for which namespace to publish the object.
-        @param redundancy: Desired minimum copies of object (not guaranteed).
-        @param ttl: Time-to-live in seconds for the object.
         @return: Target Id of primary storage location.
         """
-        return None
+        self.engine.send_unicode("STOR", zmq.SNDMORE)
+        self.engine.send_unicode(key, zmq.SNDMORE)
+        self.engine.send_unicode(content, zmq.SNDMORE)
+        self.engine.send_unicode(context)
+        return json.loads(self.engine.recv())
 
     def unpublish(self, key, context='default'):
         """
@@ -99,7 +101,19 @@ class Network(object):
         @param key: Identifier of object to remove.
         @param context: Namespace to remove object from.
         """
+        self.engine.send_unicode("REMV", zmq.SNDMORE)
+        self.engine.send_unicode(key, zmq.SNDMORE)
+        self.engine.send_unicode(context)
+        self.engine.resolve().wait()
+    
+    def get_published(self):
+        self.engine.send_unicode("PUBL")
+        return json.loads(self.engine.recv())
 
+    def get_hashtable(self):
+        self.engine.send_unicode("HASH")
+        return json.loads(self.engine.recv())
+                
     def fetch(self, key, context='default'):
         """
         Retrieve the given object from the network.
@@ -107,7 +121,10 @@ class Network(object):
         @param context: Namespace for object to be retrieved from.
         @return Content of requested object, None if not available.
         """
-        return None
+        self.engine.send_unicode("FVAL", zmq.SNDMORE)
+        self.engine.send_unicode(key, zmq.SNDMORE)
+        self.engine.send_unicode(context)
+        return json.loads(self.engine.recv())
 
     def route_to_node(self, node_id, message):
         """
