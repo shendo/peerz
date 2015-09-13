@@ -97,12 +97,6 @@ class FindNodes(MessageState):
             peer.add_rtt(time.time() * 1000 - ts)
             self.response()
 
-    def _update(self):
-        now = time.time() * 1000
-        self.times.setdefault(self.state, 0.0)
-        self.times[self.state] += (now - self.last_change)
-        self.last_change = now
-
     def _send_query(self):
         while self.has_capacity() and self.unqueried:
             peer = self.unqueried.pop(0)
@@ -120,7 +114,7 @@ class FindNodes(MessageState):
         if self.callback:
             self.callback(json.dumps([ x.to_json() for x in self.closest ]))
 
-class Ping(object):
+class Ping(MessageState):
     transitions = [
         {'trigger': 'ping', 'source': 'initialised', 'dest': 'waiting response', 'before': '_update', 'after': '_send_ping'},
         {'trigger': 'pong', 'source': 'waiting response', 'dest': 'complete', 'before': '_update', 'after': '_signal_pong'},
@@ -137,12 +131,6 @@ class Ping(object):
         peer_port = int(msg.pop(0))
         peer_id = z85.decode(msg.pop(0))
         self.peer = self.engine.verify_peer(peer_addr, peer_port, peer_id)
-
-    def _update(self):
-        now = time.time() * 1000
-        self.times.setdefault(self.state, 0.0)
-        self.times[self.state] += (now - self.last_change)
-        self.last_change = now
 
     def handle_response(self, peer, txid, msgtype, content):
         if msgtype == 0x02:
