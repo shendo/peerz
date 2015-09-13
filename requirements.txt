@@ -1,2 +1,3 @@
 pyzmq >= 14.4
 transitions >= 0.2
+pynacl
