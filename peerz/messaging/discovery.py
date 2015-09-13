@@ -121,7 +121,7 @@ class Ping(MessageState):
         {'trigger': 'timeout', 'source': '*', 'dest': 'timedout', 'before': '_update', 'after': '_timeout'},
     ]
 
-    def parse_Message(self, msg):
+    def parse_message(self, msg):
         self.unpack_request(msg)
         if self.peer:
             self.ping()
