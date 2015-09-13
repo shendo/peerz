@@ -27,6 +27,7 @@ def main():
     node = net.get_local()
     if node['port'] == 7111:
         node = net.join(NODE_ID, SECRET)
+        net.publish('hello', 'world')
     else:
         net.join()
     try:
@@ -47,6 +48,7 @@ def main():
                                                str(x))
             print ""
             time.sleep(10)
+            print 'hello = ' + (net.fetch('hello') or 'unknown')
     except KeyboardInterrupt:
         print 'Exiting...'
         net.leave()

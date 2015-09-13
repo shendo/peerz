@@ -17,13 +17,13 @@
 import json
 import time
 
-from transitions import Machine
 from zmq.utils import z85
 
+from peerz.messaging.base import MessageState
 from peerz.messaging.discovery import FindNodes
 from peerz.routing import distance_sort, id_for_key
 
-class FindValue(object):
+class FindValue(MessageState):
     states = ['initialised', 'querying', 'waiting response', 'found', 'exhausted', 'timedout']
     transitions = [
         {'trigger': 'query', 'source': 'initialised', 'dest': 'querying', 'before': '_update', 'after': '_send_query'},
@@ -35,18 +35,7 @@ class FindValue(object):
         {'trigger': 'timeout', 'source': '*', 'dest': 'timedout', 'before': '_update', 'after': '_completed', },
     ]
 
-    def __init__(self, engine, txid, msg, callback=None, max_concurrent=3):
-        self.engine = engine
-        self.callback = callback
-        self.machine = Machine(model=self,
-                               states=FindValue.states,
-                               transitions=FindValue.transitions,
-                               initial='initialised')
-
-        self.start = self.last_change = time.time() * 1000
-        self.txid = txid
-        self.times = {}
-        self.max_concurrent = max_concurrent
+    def parse_message(self, msg):
         self.key = id_for_key(msg.pop(0))
         self.context = msg.pop(0)
         self.closest = self.engine.nodetree.closest_to(self.key)
@@ -54,7 +43,6 @@ class FindValue(object):
         self.queried = []
         self.outstanding = {} # peer_id -> query time
         self.value = None
-        self.query()
 
     def is_complete(self):
         return self.state in ['found', 'exhausted', 'timedout']
@@ -63,7 +51,7 @@ class FindValue(object):
         return self.value
 
     def has_capacity(self):
-        return len(self.outstanding) < self.max_concurrent
+        return len(self.outstanding) < self.max_concurrency
 
     def has_unqueried(self):
         return self.unqueried
@@ -77,18 +65,19 @@ class FindValue(object):
     def outstanding_is_empty(self):
         return not self.outstanding
 
-    def _pack_request(self):
+    def pack_request(self):
         return self.key
 
     @staticmethod
-    def _pack_node_response(closest):
+    def pack_node_response(closest):
         resp = b''
         for x in closest:
             # possibly the world's worst serialisation scheme
             resp += b'%s%s\0%i\0' % (x.node_id, x.address, x.port)
         return resp
 
-    def _unpack_node_response(self, content):
+    @staticmethod
+    def unpack_node_response(content):
         while content:
             try:
                 id = content[:32]
@@ -102,7 +91,7 @@ class FindValue(object):
             self.value = content
             self.engine.hashtable[self.key] = peer.node_id, time.time(), content 
         elif msgtype == 0x06:
-            for x in FindNodes._unpack_response(content):
+            for x in FindNodes.unpack_response(content):
                 n = self.engine.verify_peer(*x)
                 self.engine.nodetree.add(n)
                 # only add new nodes
@@ -117,18 +106,9 @@ class FindValue(object):
             peer.add_rtt(time.time() * 1000 - ts)
             self.response()
 
-    def _update(self):
-        now = time.time() * 1000
-        self.times.setdefault(self.state, 0.0)
-        self.times[self.state] += (now - self.last_change)
-        self.last_change = now
-
-    def duration(self):
-        return time.time() * 1000 - self.start
-
     def _send_query(self):
         peer = self.unqueried.pop(0)
-        self.engine.send_external(peer, self.txid, 0x05, self._pack_request())
+        self.engine.send_external(peer, self.txid, 0x05, self.pack_request())
         self.outstanding[peer.node_id] = time.time() * 1000
         self.queried.append(peer.node_id)
         self.query()
@@ -138,7 +118,7 @@ class FindValue(object):
             self.callback(json.dumps(self.value, ensure_ascii=False))
 
 
-class StoreValue(object):
+class StoreValue(MessageState):
     states = ['initialised', 'waiting response', 'storing', 'stored', 'timedout']
     transitions = [
         {'trigger': 'query', 'source': 'initialised', 'dest': 'waiting response', 'before': '_update', 'after': '_send_query'},
@@ -146,42 +126,22 @@ class StoreValue(object):
         {'trigger': 'timeout', 'source': '*', 'dest': 'timedout', 'before': '_update', 'after': '_completed', },
     ]
 
-    def __init__(self, engine, txid, msg, callback=None):
-        self.engine = engine
-        self.callback = callback
-        self.machine = Machine(model=self,
-                               states=FindValue.states,
-                               transitions=FindValue.transitions,
-                               initial='initialised')
-
-        self.start = self.last_change = time.time() * 1000
-        self.max_duration = 8000
-        self.txid = txid
-        self.times = {}
+    def parse_message(self, msg):
         self.key = msg.pop(0)
         self.content = msg.pop(0)
         self.context = msg.pop(0)
         self.engine.hashtable[id_for_key(self.key)] = (self.engine.node.node_id, time.time(), self.content)
         self.closest = [  x.to_json() for x in self.engine.nodetree.closest_to(id_for_key(self.key)) ]
-        self.query()
 
     def is_complete(self):
         return self.state in ['stored', 'timedout']
     
-    def _pack_request(self):
+    def pack_request(self):
         return b'%s%s' % (self.key, self.content)
 
-    def _unpack_response(self, content):
+    @staticmethod
+    def unpack_response(content):
         return content[:32], content[32:]
-
-    def _update(self):
-        now = time.time() * 1000
-        self.times.setdefault(self.state, 0.0)
-        self.times[self.state] += (now - self.last_change)
-        self.last_change = now
-
-    def duration(self):
-        return time.time() * 1000 - self.start
 
     def _send_query(self):
         self.engine.txmap.create(FindNodes,
@@ -191,64 +151,47 @@ class StoreValue(object):
         self.closest = json.loads(nodes)
         for x in self.closest:
             peer = self.engine.verify_peer(x['address'], x['port'], x['node_id'])
-            self.engine.send_external(peer, self.txid, 0x09, self._pack_request())
+            self.engine.send_external(peer, self.txid, 0x09, self.pack_request())
 
     def _completed(self):
         if self.callback:
             self.callback(json.dumps(self.closest))
 
-class GetPublished(object):
+class GetPublished(MessageState):
 
-    def __init__(self, engine, txid, msg, callback=None):
-        self.engine = engine
-        self.callback = callback
-        self.start = self.last_change = time.time() * 1000
-        self.txid = txid
-        if callback:
-            d = {repr(k): repr(v) for k, v in self.engine.hashtable.items() if v[0] == self.engine.node.node_id}
-            callback(json.dumps(d, ensure_ascii=False))
-        
+    def parse_message(self, msg):
+        if self.callback:
+            d = {repr(k): repr(v) for k, v in self.engine.hashtable.items()
+                 if v[0] == self.engine.node.node_id}
+            self.callback(json.dumps(d, ensure_ascii=False))
+
     def is_complete(self):
         return True
     
     def timeout(self):
         pass
-    
-    def duration(self):
-        return time.time() * 1000 - self.start
 
-class GetHashtable(object):
+class GetHashtable(MessageState):
 
-    def __init__(self, engine, txid, msg, callback=None):
-        self.engine = engine
-        self.callback = callback
-        self.start = self.last_change = time.time() * 1000
-        self.txid = txid
+    def parse_message(self, msg):
         d = {repr(k): repr(v) for k, v in self.engine.hashtable.items()}
-        if callback:
-            callback(json.dumps(d, ensure_ascii=False))
-        
+        if self.callback:
+            self.callback(json.dumps(d, ensure_ascii=False))
+
     def is_complete(self):
         return True
     
     def timeout(self):
         pass
     
-    def duration(self):
-        return time.time() * 1000 - self.start
-    
-class RemoveValue(object):
+class RemoveValue(MessageState):
 
-    def __init__(self, engine, txid, msg, callback=None):
-        self.engine = engine
-        self.callback = callback
-        self.start = self.last_change = time.time() * 1000
-        self.txid = txid
+    def parse_message(self, msg):
         self.key = msg.pop(0)
         self.context = msg.pop(0)
         self.engine.hashtable.pop(id_for_key(self.key), None)
-        if callback:
-            callback()
+        if self.callback:
+            self.callback()
         
     def is_complete(self):
         return True
@@ -256,9 +199,6 @@ class RemoveValue(object):
     def timeout(self):
         pass
     
-    def duration(self):
-        return time.time() * 1000 - self.start
-
 class DistributedHashtable(object):
     id = 0x01
     mtype_table = {0x05: 'FVAL',
@@ -294,7 +234,7 @@ class DistributedHashtable(object):
             else:
                 # send next closest nodes
                 self.engine.send_external(peer, txid, 0x06,
-                    FindNodes._pack_response(self.engine.nodetree.closest_to(content)))
+                    FindNodes.pack_response(self.engine.nodetree.closest_to(content)))
 
         elif msgtype == 0x09:
             key = id_for_key(content)

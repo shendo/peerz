@@ -52,7 +52,7 @@ class Engine(object):
             self.seeds = []
         # externally advertised
         self.port = BASE_PORT
-        self.addr = socket.gethostbyname(socket.gethostname()) # '10.1.1.115'
+        self.addr = socket.gethostbyname(socket.gethostname())
         # local may differ to external
         self.bindport = self.port
         self.bindaddr = ''
@@ -144,10 +144,6 @@ class Engine(object):
     def start(self, node_id, secret_key=None):
         if node_id:
             self.reset(node_id, secret_key)
-# TODO: how to handle starting seeds?... is list optional?
-#         if not self.seeds:
-#             raise ValueError('Seeds list must not be empty and must contain '
-#                              'endpoints in "address:port:key" format.')
         self.poller.register(self.udpserver.fileno(), zmq.POLLIN)
         for endpoint in self.seeds:
             addr, port, id = endpoint.split(':', 2)

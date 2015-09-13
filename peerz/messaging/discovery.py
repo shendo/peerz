@@ -18,12 +18,12 @@ import json
 import random
 import time
 
-from transitions import Machine
 from zmq.utils import z85
 
+from peerz.messaging.base import MessageState
 from peerz.routing import distance_sort, generate_random
 
-class FindNodes(object):
+class FindNodes(MessageState):
     states = ['initialised', 'querying', 'waiting response', 'exhausted', 'timedout']
     transitions = [
         {'trigger': 'query', 'source': 'initialised', 'dest': 'querying', 'before': '_update', 'after': '_send_query'},
@@ -33,31 +33,19 @@ class FindNodes(object):
         {'trigger': 'timeout', 'source': '*', 'dest': 'timedout', 'before': '_update', 'after': '_completed', },
     ]
 
-    def __init__(self, engine, txid, msg, callback=None, max_concurrent=3):
-        self.engine = engine
-        self.callback = callback
-        self.machine = Machine(model=self,
-                               states=FindNodes.states,
-                               transitions=FindNodes.transitions,
-                               initial='initialised')
-
-        self.start = self.last_change = time.time() * 1000
-        self.txid = txid
-        self.times = {}
-        self.max_concurrent = max_concurrent
+    def parse_message(self, msg):
         self.target = z85.decode(msg.pop(0))
         # include peers that may be in bad states in case they have come good? will eventually be evicted
         self.closest = self.engine.nodetree.closest_to(self.target)
         self.unqueried = list(self.closest)  # shallow is fine
         self.queried = []
         self.outstanding = {} # peer_id -> query time
-        self.query()
 
     def is_complete(self):
         return self.state in ['exhausted', 'timedout']
     
     def has_capacity(self):
-        return len(self.outstanding) < self.max_concurrent
+        return len(self.outstanding) < self.max_concurrency
 
     def has_unqueried(self):
         return self.unqueried
@@ -71,11 +59,11 @@ class FindNodes(object):
     def outstanding_is_empty(self):
         return not self.outstanding
 
-    def _pack_request(self):
+    def pack_request(self):
         return self.target
 
     @staticmethod
-    def _pack_response(closest):
+    def pack_response(closest):
         resp = b''
         for x in closest:
             # possibly the world's worst serialisation scheme
@@ -83,7 +71,7 @@ class FindNodes(object):
         return resp
 
     @staticmethod
-    def _unpack_response( content):
+    def unpack_response(content):
         while content:
             try:
                 id = content[:32]
@@ -94,7 +82,7 @@ class FindNodes(object):
 
     def handle_response(self, peer, txid, msgtype, content):
         if msgtype == 0x04:
-            for x in self._unpack_response(content):
+            for x in self.unpack_response(content):
                 n = self.engine.verify_peer(*x)
                 self.engine.nodetree.add(n)
                 # only add new nodes
@@ -115,13 +103,10 @@ class FindNodes(object):
         self.times[self.state] += (now - self.last_change)
         self.last_change = now
 
-    def duration(self):
-        return time.time() * 1000 - self.start
-
     def _send_query(self):
         while self.has_capacity() and self.unqueried:
             peer = self.unqueried.pop(0)
-            self.engine.send_external(peer, self.txid, 0x03, self._pack_request())
+            self.engine.send_external(peer, self.txid, 0x03, self.pack_request())
             self.outstanding[peer.node_id] = time.time() * 1000
             self.queried.append(peer.node_id)
 
@@ -136,31 +121,18 @@ class FindNodes(object):
             self.callback(json.dumps([ x.to_json() for x in self.closest ]))
 
 class Ping(object):
-    states = ['initialised', 'waiting response', 'complete', 'timedout']
     transitions = [
         {'trigger': 'ping', 'source': 'initialised', 'dest': 'waiting response', 'before': '_update', 'after': '_send_ping'},
         {'trigger': 'pong', 'source': 'waiting response', 'dest': 'complete', 'before': '_update', 'after': '_signal_pong'},
         {'trigger': 'timeout', 'source': '*', 'dest': 'timedout', 'before': '_update', 'after': '_timeout'},
     ]
 
-    def __init__(self, engine, txid, msg, callback=None):
-        self.engine = engine
-        self.callback = callback
-        self.machine = Machine(model=self,
-                               states=Ping.states,
-                               transitions=Ping.transitions,
-                               initial='initialised')
-        self.start = self.last_change = time.time() * 1000
-        self.txid = txid
-        self.times = {}
-        self._unpack_request(msg)
+    def parse_Message(self, msg):
+        self.unpack_request(msg)
         if self.peer:
             self.ping()
-
-    def is_complete(self):
-        return self.state in ['complete', 'timedout']
     
-    def _unpack_request(self, msg):
+    def unpack_request(self, msg):
         peer_addr = msg.pop(0)
         peer_port = int(msg.pop(0))
         peer_id = z85.decode(msg.pop(0))
@@ -176,12 +148,6 @@ class Ping(object):
         if msgtype == 0x02:
             peer.add_rtt(self.latency())
             self.pong()
-
-    def duration(self):
-        return time.time() * 1000 - self.start
-
-    def latency(self):
-        return self.times.setdefault('waiting response', 0.0)
 
     def _send_ping(self):
         self.engine.send_external(self.peer, self.txid, 0x01)
@@ -229,7 +195,7 @@ class Discovery(object):
             assert len(content) == 32
             self.engine.send_external(peer, txid, 0x04,
                 # do not include nodes of questionable status
-                FindNodes._pack_response(
+                FindNodes.pack_response(
                     [ x for x in self.engine.nodetree.closest_to(content) if not x.is_failed() ]))
 
     def trigger_events(self):
