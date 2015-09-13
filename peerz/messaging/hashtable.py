@@ -127,6 +127,7 @@ class StoreValue(MessageState):
     ]
 
     def parse_message(self, msg):
+        self.max_duration = 8000
         self.key = msg.pop(0)
         self.content = msg.pop(0)
         self.context = msg.pop(0)
@@ -272,7 +273,7 @@ class DistributedHashtable(object):
         for k, v in self.engine.hashtable.items():
             node_id, last, content = v
             if time.time() >= last + (2.5 * self.published_refresh):
-                assert node_id != self.engine.node.node_id
+                #assert node_id != self.engine.node.node_id
                 self.engine.hashtable.pop(k, None)
         
     @staticmethod
