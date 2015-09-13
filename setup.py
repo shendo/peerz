@@ -18,14 +18,9 @@
 
 from setuptools import setup
 
-def load_version():
-    "Returns the current project version"
-    from peerz import version
-    return version.__version__
-
 setup(
     name="peerz",
-    version=load_version(),
+    version="0.1-dev",
     packages=['peerz'],
     zip_safe=False,
     author="Steve Henderson",
